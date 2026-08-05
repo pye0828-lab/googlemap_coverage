@@ -72,7 +72,9 @@
 
 ## 3. 웹서버 설정 (필수)
 
-이 레포는 단일 `index.html`을 정적으로 그대로 서빙한다(빌드 없음). 그래서 **`CLAUDE.md`·`README.md`·`selfcheck.test.js`·`.git/`이 웹루트에 그대로 놓인다** — 아래 차단이 서비스 공개의 전제조건이다.
+이 레포는 단일 `index.html`을 정적으로 그대로 서빙한다(빌드 없음). 그래서 **`CLAUDE.md`·`README.md`·`selfcheck.test.js`·`.gitattributes`·`.git/`이 웹루트에 그대로 놓인다** — 아래 차단이 서비스 공개의 전제조건이다.
+
+아래 nginx/Apache 블록은 **어느 서버에나 적용되는 최소 규칙**이고, 현재 운영 서버에 실제로 들어간 값은 §3.1에 있다.
 
 ### nginx
 
@@ -110,13 +112,101 @@ add_header Permissions-Policy "geolocation=(self), microphone=(), camera=()" alw
 
 > ⚠️ `add_header`를 하위 `location` 블록에 넣으면 **상위 블록의 add_header가 그 경로에서 통째로 무효화**된다(nginx 상속 규칙). 헤더 하나 때문에 HSTS 등이 사라지지 않도록 값만 바꾸거나 `$uri`로 가른다.
 
-### 적용 확인
+### 3.1 실제 배포 (yepark.co.kr, 라즈베리파이 + nginx)
 
-배포 후 반드시 돌린다. `*.md`·`.git/`은 **404**, 서비스 경로는 **200**, `Permissions-Policy`는 `geolocation=(self)`.
+- **서비스 URL**: `https://yepark.co.kr/bovicare-gmapgoogle/`
+- **실제 경로**: `/var/www/html/webpage-googlemap-coverage/`
+- **설정 파일**: `/etc/nginx/sites-enabled/default` 의 `server_name yepark.co.kr` HTTPS 블록, 그리고 `/etc/nginx/conf.d/security.conf`
+
+이 서버에는 국내판 K(`/bovicare-gmapkakao/`)와 bovicare 계열 사이트가 같이 올라가 있다. 그래서 §3의 일반 규칙을 **그대로** 넣을 수 없는 지점이 두 군데 있다 — 아래가 그 실제 적용값이다.
+
+**(1) 서비스 경로 매핑** — 폴더명을 URL에 노출하지 않기 위해 `alias`로 붙인다. trailing slash 없이 들어와도 먹도록 301을 같이 둔다(없으면 404).
+
+```nginx
+location = /bovicare-gmapgoogle {
+    return 301 /bovicare-gmapgoogle/;
+}
+
+location /bovicare-gmapgoogle/ {
+    alias /var/www/html/webpage-googlemap-coverage/;
+    index index.html;
+    try_files $uri $uri/ =404;
+}
+```
+
+**(2) 내부 폴더명 직접 접근 차단** — `alias`를 써도 `root` 하위에 실제 폴더가 있으면 폴더명으로 우회 접근된다. 형제 경로가 이미 한 줄에 모여 있으므로 **새 location을 만들지 않고 기존 regex에 폴더명을 추가**한다.
+
+```nginx
+location ~ ^/(webpage-yepark-home|...|webpage-kakaomap-coverage|webpage-googlemap-coverage)(/|$) {
+    deny all;
+    return 404;
+}
+```
+
+**(3) 문서·스크립트 차단 — §3의 `.js` 통째 차단은 이 서버에서 쓸 수 없다.**
+
+```nginx
+location ~* \.(md|sh|gitignore|gitattributes|test\.js)$ {   # ← js 가 아니라 test\.js
+    deny all;
+    return 404;
+}
+```
+
+이 블록은 server 전역이라 **같은 서버의 bovicare 사이트들이 서빙하는 진짜 `.js`까지 죽인다.** 그래서 `test\.js`로 좁혔다 — 이 레포에서 막아야 할 `.js`는 `selfcheck.test.js` 하나뿐이라 결과는 같다. **대신 이 레포에 `*.test.js`가 아닌 개발용 `.js`를 추가하면 그대로 공개된다** — 파일을 늘릴 때 서비스에 필요한 것인지 먼저 따지고, 아니면 이 목록에 확장자를 추가한다.
+
+**(4) 위치 권한 헤더** — §3의 경고대로 `add_header`는 한 곳에만 두고 값만 `$uri`로 가른다. K와 G 두 경로에서만 허용한다.
+
+```nginx
+map $uri $geolocation_policy {
+    default                    "geolocation=()";
+    ~^/bovicare-gmapkakao/     "geolocation=(self)";
+    ~^/bovicare-gmapgoogle/    "geolocation=(self)";
+}
+
+add_header Permissions-Policy "${geolocation_policy}, microphone=(), camera=()" always;
+```
+
+### 3.2 적용 절차
 
 ```bash
-curl -sI https://<호스트>/<경로>/ | grep -i permissions-policy
+sudo mkdir -p /etc/nginx/backups   # sites-enabled/ 안에 백업을 두면 중복 로드된다
+sudo cp /etc/nginx/sites-enabled/default /etc/nginx/backups/default.bak.$(date +%Y%m%d-%H%M%S)
+sudo cp /etc/nginx/conf.d/security.conf  /etc/nginx/backups/security.conf.bak.$(date +%Y%m%d-%H%M%S)
+# ... 위 설정 추가 ...
+sudo nginx -t && sudo systemctl reload nginx
 ```
+
+`nginx -t`가 실패하면 reload하지 않는다(`&&`로 묶는 이유). `nginx.conf`가 `include /etc/nginx/sites-enabled/*;`로 **확장자를 가리지 않고** 읽으므로 백업을 그 디렉터리에 두면 server 블록이 중복 로드된다.
+
+### 3.3 적용 확인 — 배포 후 반드시 돌린다
+
+```bash
+for u in /bovicare-gmapgoogle /bovicare-gmapgoogle/ \
+         /bovicare-gmapgoogle/CLAUDE.md /bovicare-gmapgoogle/README.md \
+         /bovicare-gmapgoogle/selfcheck.test.js /bovicare-gmapgoogle/.gitattributes \
+         /bovicare-gmapgoogle/.git/config /webpage-googlemap-coverage/ ; do
+  printf "%-42s %s\n" "$u" "$(curl -s -o /dev/null -w '%{http_code}' https://yepark.co.kr$u)"
+done
+```
+
+| 경로 | 기대 |
+|---|---|
+| `/bovicare-gmapgoogle` | **301** (→ `/bovicare-gmapgoogle/`) |
+| `/bovicare-gmapgoogle/` | **200** |
+| `/bovicare-gmapgoogle/CLAUDE.md` · `README.md` | **404** |
+| `/bovicare-gmapgoogle/selfcheck.test.js` · `.gitattributes` | **404** |
+| `/bovicare-gmapgoogle/.git/config` | **404** |
+| `/webpage-googlemap-coverage/` | **404** |
+
+위치 기능은 200/404로 안 잡힌다 — 헤더로 따로 본다. **K와 루트도 같이 확인한다**(값을 한 곳에서 가르므로 회귀가 나면 다른 경로에서 터진다).
+
+```bash
+curl -sI https://yepark.co.kr/bovicare-gmapgoogle/ | grep -i permissions-policy   # geolocation=(self)
+curl -sI https://yepark.co.kr/bovicare-gmapkakao/  | grep -i permissions-policy   # geolocation=(self) — 회귀 확인
+curl -sI https://yepark.co.kr/                     | grep -i permissions-policy   # geolocation=()     — 차단 유지
+```
+
+> **키 인증은 이 절차로 검증되지 않는다.** 리퍼러·결제·API 활성화는 브라우저에서만 판정된다. `AuthenticationService`를 `curl`로 직접 부르면 리퍼러와 무관하게 `NotLoadingAPIFromGoogleMapsError`가 돌아와 **정상과 실패를 구분하지 못한다** — 실지도 확인을 대체하려 들지 말 것.
 
 ---
 
