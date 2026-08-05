@@ -1,0 +1,1630 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  GeoMeasure G — 게이트웨이 커버리지(반경) 확인용 지도 측정 도구 (Google Maps)
+  ----------------------------------------------------------------------------
+  · 이름의 G: 지도 엔진이 아니라 "국내 밖에서도 쓰는 판"이라는 뜻. 국내판은
+    GeoMeasure K(카카오맵)다 — 카카오맵은 대한민국 밖 지도 데이터를 제공하지
+    않아 해외 현장에서는 이 판을 쓴다.
+  ----------------------------------------------------------------------------
+  계보 / 출처
+  · 원본: dream2k2/gmap-plus-fsm- (GeoMeasure, Google Maps 기반)
+      https://dream2k2.github.io/gmap-plus-fsm-/
+    지점 좌표·거리 측정과 반경원 표시라는 도구의 뼈대가 여기서 나왔다.
+    LICENSE 가 없어 원칙상 원작자 저작권이 살아있다 — 화면·README 에 출처를 남긴다.
+  · 그 원본을 국내 최신 위성영상(카카오맵 스카이뷰)으로 옮긴 것이 GeoMeasure K
+    (pye0828-lab/kakaomap_coverage)이고, 영역·텍스트·GeoJSON 저장 기능이 거기서
+    자랐다. 이 파일은 그 K 의 기능을 다시 Google Maps 로 옮긴 것이다.
+  · 기능 동기화 기준: kakaomap_coverage @ be7a4d3
+      "측위가 화면을 망치던 문제들 수정 및 위치 차단 헤더 대응" (2026-08-06)
+    즉 원본 → K → G 로, 지도 엔진만 두 번 바뀌고 기능은 이어져 왔다.
+  ----------------------------------------------------------------------------
+  · 지점 좌표 확인 / 경로 거리 측정 / 지점별 반경원 표시 / GPS 실시간 추적
+  · 영역(방목지·농장경계) 다각형 + 지도 위 텍스트 주석
+  · 저장은 GeoJSON — K 와 파일이 그대로 오간다(엔진이 달라도 데이터는 하나)
+  · 순수 로직 검증: node selfcheck.test.js / 브라우저는 index.html?selfcheck=1
+  · 작성: 바이브코딩(사람 지시 + AI 에이전트 작성) / 2026-08-06
+  · 코드룰: Ponytail (github.com/DietrichGebert/ponytail) 적용
+    - 주석은 전부 한글, "무엇"이 아니라 "왜"를 적는다
+    - 한계를 알고 자른 단순화는 `ponytail:` 주석으로 한계와 개선경로를 남긴다
+  · 상세 지침은 같은 폴더의 CLAUDE.md (※ 웹서버에서 *.md 외부접근 차단할 것)
+  ============================================================================
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#101418">
+<title>GeoMeasure G — 커버리지·거리 측정</title>
+<style>
+  :root{
+    --bg:#101418; --panel:#181e24; --panel2:#1f2730;
+    --line:#2b3542; --txt:#e8edf2; --dim:#8a97a5;
+    --acc:#38b6ff; --acc2:#ffc53d; --ok:#4cd07d; --danger:#ff6b6b;
+    --mono:'SF Mono','Roboto Mono',Consolas,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;overflow:hidden;font-family:-apple-system,'Malgun Gothic','Noto Sans KR',sans-serif;background:var(--bg);color:var(--txt)}
+
+  /* ===== 레이아웃: 가로형 = 좌측 패널 + 지도 ===== */
+  #app{display:flex;height:100%;width:100%}
+  #panel{width:290px;min-width:290px;background:var(--panel);border-right:1px solid var(--line);
+         display:flex;flex-direction:column;z-index:10;transition:margin-left .25s}
+  #panel.hidden{margin-left:-290px}
+  #map{flex:1;height:100%;background:#0a0d10}
+
+  /* 세로 모드: 패널이 하단 시트로 */
+  @media (orientation:portrait){
+    #app{flex-direction:column-reverse}
+    #panel{width:100%;min-width:0;height:44%;border-right:none;border-top:1px solid var(--line);transition:margin-bottom .25s}
+    #panel.hidden{margin-left:0;margin-bottom:calc(-44vh + 0px)}
+  }
+
+  /* ===== 패널 내부 ===== */
+  #panelHead{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
+  #panelHead h1{font-size:14px;font-weight:700;letter-spacing:.5px}
+  #panelHead .sub{font-size:10px;color:var(--dim)}
+  #panelBody{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:10px}
+
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px}
+  .card h2{font-size:11px;color:var(--dim);font-weight:600;letter-spacing:.8px;margin-bottom:6px;text-transform:uppercase}
+  .coord{font-family:var(--mono);font-size:13px;line-height:1.5;word-break:break-all}
+  .coord b{color:var(--acc)}
+  .muted{color:var(--dim);font-size:12px}
+
+  .row{display:flex;gap:6px;flex-wrap:wrap}
+  button{border:1px solid var(--line);background:var(--panel2);color:var(--txt);
+         border-radius:8px;padding:8px 10px;font-size:12px;font-weight:600;cursor:pointer}
+  button:active{transform:scale(.97)}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#04121c}
+  button.warn{background:transparent;border-color:var(--danger);color:var(--danger)}
+  button.ghost{background:transparent}
+  button.small{padding:5px 8px;font-size:11px}
+  button.on{border-color:var(--acc);color:var(--acc)}
+
+  .pt{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;background:var(--panel2);
+      border:1px solid var(--line);margin-bottom:6px}
+  .pt .badge{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+             font-size:11px;font-weight:800;color:#111;background:var(--acc2);flex-shrink:0}
+  .pt .info{flex:1;min-width:0}
+  .pt .info input.nm{width:100%;padding:3px 5px;margin-bottom:3px;border-radius:5px;
+                     border:1px solid var(--line);background:var(--bg);color:var(--txt);font-size:12px}
+  /* 지도에서 마커를 누르면 해당 행을 표시해 준다(지도 ↔ 패널 연결) */
+  .pt.hl{border-color:var(--acc);box-shadow:inset 0 0 0 1px var(--acc)}
+  .pt .info .ll{font-family:var(--mono);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pt .info .seg{font-size:10px;color:var(--dim)}
+  .pt .del{color:var(--danger);background:none;border:none;font-size:15px;padding:2px 6px}
+
+  #totalDist{font-family:var(--mono);font-size:20px;font-weight:700;color:var(--acc2)}
+  #gpsDist{font-family:var(--mono);font-size:14px;color:var(--ok)}
+
+  /* ===== 지도 위 플로팅 버튼 ===== */
+  #fabs{position:absolute;top:10px;left:10px;z-index:20;display:flex;flex-direction:column;gap:8px}
+  .fab{width:42px;height:42px;border-radius:10px;background:var(--panel);border:1px solid var(--line);
+       color:var(--txt);font-size:18px;display:flex;align-items:center;justify-content:center;
+       box-shadow:0 2px 8px rgba(0,0,0,.4)}
+  #mapWrap{position:relative;flex:1;height:100%}
+
+  .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#000c;color:#fff;
+         padding:8px 16px;border-radius:20px;font-size:12px;z-index:200;opacity:0;transition:opacity .3s;pointer-events:none}
+  .toast.show{opacity:1}
+
+  /* 지도 위 거리 라벨 (OverlayView 내용물).
+     pointer-events:none 이 없으면 라벨이 지도 클릭(=지점 추가)을 가로챈다. */
+  .dist-label{font-family:var(--mono);font-size:14px;font-weight:800;white-space:nowrap;pointer-events:none;
+              text-shadow:0 0 3px #000,0 0 6px #000,1px 1px 2px #000}
+
+  /* 지도 로딩 실패 안내 (API 키 미설정·리퍼러 미등록·결제 미연결 등) */
+  #mapErr{position:absolute;inset:0;z-index:30;display:none;align-items:center;justify-content:center;padding:24px;
+          background:var(--bg);text-align:center;font-size:13px;line-height:1.7;color:var(--dim)}
+  #mapErr b{color:var(--danger)}
+  #mapErr .why{display:block;margin-top:10px;font-family:var(--mono);font-size:11px;color:#ffb3b3;
+               word-break:break-all;text-align:left;max-width:520px}
+  #mapErr ul{text-align:left;display:inline-block;margin-top:8px;font-size:12px;line-height:1.8}
+
+  /* 출처 표기 */
+  #credit{font-size:10px;color:var(--dim);line-height:1.6;padding:2px 2px 6px;border-top:1px solid var(--line);margin-top:2px}
+  #credit a{color:var(--dim);text-decoration:underline}
+
+  /* ===== 모드 전환 바 =====
+     지도 클릭의 주인이 누구인지(측정/영역/보기)를 항상 보이게 둔다.
+     #panelBody 안에 두면 스크롤에 밀려나므로 헤더 아래에 고정한다. */
+  #modeBar{padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel)}
+  #modeRow{display:flex;gap:0}
+  #modeRow button{flex:1;border-radius:0;border-left-width:0;font-size:12px;padding:7px 4px}
+  #modeRow button:first-child{border-radius:8px 0 0 8px;border-left-width:1px}
+  #modeRow button:last-child{border-radius:0 8px 8px 0}
+  #modeRow button.on{background:var(--acc);border-color:var(--acc);color:#04121c}
+  #modeHint{font-size:10px;color:var(--dim);margin-top:5px;line-height:1.4}
+
+  /* ===== 영역·텍스트 목록 항목 ===== */
+  .item{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 8px;margin-bottom:6px}
+  .item-head{display:flex;align-items:center;gap:6px}
+  .item input[type=text]{flex:1;min-width:0;padding:4px 6px;border-radius:6px;border:1px solid var(--line);
+                         background:var(--bg);color:var(--txt);font-size:12px}
+  .item .del{color:var(--danger);background:none;border:none;font-size:15px;padding:2px 5px;flex-shrink:0}
+  .item-row{display:flex;align-items:center;gap:8px;margin-top:5px;flex-wrap:wrap}
+  .item-row label{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--dim)}
+  .item-row input[type=color]{width:26px;height:20px;padding:0;border:1px solid var(--line);
+                              border-radius:4px;background:none}
+  .item-row input[type=range]{width:64px}
+  .item .mono{font-family:var(--mono);font-size:10px;margin-top:4px}
+
+  /* ===== 지도 위 라벨(영역 이름·독립 텍스트) =====
+     OverlayView 는 좌표에 고정되지만 크기는 화면 픽셀 고정이라, 줌아웃하면
+     서로 겹친다 — JS 에서 줌 임계값 아래로 내려가면 숨긴다.
+     거리 라벨(.dist-label)과 달리 pointer-events 를 살려둔다. 드래그로 위치를
+     옮겨야 하기 때문이며, 그 대가로 라벨 위 클릭은 지점 추가로 가지 않는다. */
+  .map-label{font-size:12px;line-height:1.35;color:#fff;background:rgba(12,16,20,.78);
+             border:1px solid var(--line);border-radius:7px;padding:4px 7px;white-space:nowrap;
+             cursor:grab;user-select:none;-webkit-user-select:none;
+             text-shadow:0 1px 2px #000;box-shadow:0 2px 6px rgba(0,0,0,.5)}
+  .map-label.dragging{cursor:grabbing;opacity:.75}
+  .map-label b{display:block;font-size:13px;font-weight:800}
+  .map-label span{display:block;font-size:11px;color:#cfd8e2}
+  .map-label span.dim{color:var(--dim);font-family:var(--mono);font-size:10px}
+  .text-label{background:rgba(12,16,20,.6)}
+
+  /* 파일 드래그앤드롭 안내 */
+  #dropHint{position:absolute;inset:0;z-index:40;display:none;align-items:center;justify-content:center;
+            background:rgba(56,182,255,.12);border:3px dashed var(--acc);font-size:15px;font-weight:700;color:var(--acc)}
+  #dropHint.on{display:flex}
+
+  #importLog{font-size:10px;line-height:1.5;color:var(--acc2);max-height:120px;overflow-y:auto;margin-top:6px}
+
+  /* 자체 점검 결과 오버레이 (?selfcheck=1) */
+  #selfcheck{position:fixed;inset:0;z-index:300;background:#0b0f13;color:var(--txt);padding:20px;
+             font-family:var(--mono);font-size:13px;line-height:1.7;white-space:pre-wrap;overflow:auto}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- 좌측(가로) / 하단(세로) 패널 -->
+  <div id="panel">
+    <div id="panelHead">
+      <div>
+        <h1>GeoMeasure G</h1>
+        <div class="sub">커버리지 · 거리 · 영역 측정</div>
+      </div>
+    </div>
+
+    <!-- 모드 전환: 지도 클릭의 주인을 정하는 유일한 스위치.
+         드로잉 매니저가 클릭을 자체적으로 가로채므로 측정과 배타여야 한다. -->
+    <div id="modeBar">
+      <div class="row" id="modeRow">
+        <button data-mode="measure" onclick="setMode('measure')">📏 측정</button>
+        <button data-mode="area"    onclick="setMode('area')">⬟ 영역</button>
+        <button data-mode="view"    onclick="setMode('view')">👁 보기</button>
+      </div>
+      <div id="modeHint">지도를 탭하면 측정 지점이 추가됩니다.</div>
+    </div>
+
+    <div id="panelBody">
+
+      <div class="card">
+        <h2>🔍 장소 검색</h2>
+        <div style="display:flex;gap:6px">
+          <input id="searchInput" type="text" placeholder="장소명 또는 좌표"
+            style="flex:1;min-width:0;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--txt);font-size:13px">
+          <button class="primary small" onclick="doSearch()">검색</button>
+          <button class="small ghost" id="clearSearchBtn" onclick="clearSearchMarker(true)"
+                  style="display:none" title="지도 위치는 그대로 두고 마커만 제거">✕ 마커</button>
+        </div>
+        <div class="muted" style="font-size:10px;margin-top:5px">
+          주소(예: Ruta 2 km 45, Paraguay) 또는 좌표(예: -25.2637, -57.5759)<br>
+          검색 마커는 <b>마커를 클릭</b>하거나 ✕ 로 지웁니다 (측정 지점은 그대로)
+        </div>
+        <div id="searchResults" style="margin-top:6px"></div>
+      </div>
+
+      <div class="card">
+        <h2>📍 현재 위치 (GPS)</h2>
+        <div class="coord" id="gpsCoord">— 미확인 —</div>
+        <div class="muted" id="gpsAcc"></div>
+        <div class="row" style="margin-top:8px">
+          <button class="primary small" onclick="locateMe()">위치 갱신</button>
+          <button class="small" id="trackBtn" onclick="toggleTrack()">실시간 추적 OFF</button>
+          <button class="small ghost" onclick="copyText(gps ? fmt(gps.lat)+', '+fmt(gps.lng) : '')">복사</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>🎯 선택 지점 <span class="muted">(지도를 탭)</span></h2>
+        <div class="row" style="align-items:center;margin-bottom:8px;gap:10px">
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px">
+            반경(m)
+            <input id="radiusInput" type="number" value="500" min="1" step="50"
+              style="width:72px;padding:5px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--txt);font-family:var(--mono);font-size:12px"
+              onchange="applyRadius()">
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px">
+            <input id="radiusToggle" type="checkbox" checked onchange="applyRadius()"> 반경 표시
+          </label>
+        </div>
+        <div id="ptList"><div class="muted">지도를 탭하면 지점이 추가됩니다.</div></div>
+        <div class="row" style="margin-top:6px">
+          <button class="warn small" onclick="clearPts()">전체 삭제</button>
+          <button class="small" onclick="undoPt()">↩ 되돌리기</button>
+          <button class="small" id="measureBtn" onclick="toggleMeasure()">✋ 지정 종료</button>
+        </div>
+        <div class="muted" style="font-size:10px;margin-top:5px">
+          탭 = 지점 추가 · 우클릭(길게 누르기) = 지정 종료 · 마커 드래그로 이동<br>
+          마커에 <b>마우스를 올리면</b> 이름·좌표가 뜨고, <b>클릭하면</b> 아래 목록에서 해당 지점이 표시됩니다
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>📏 거리</h2>
+        <div class="muted">전체 거리 (경로)</div>
+        <div id="totalDist">0 m</div>
+        <div id="segList" style="margin-top:6px"></div>
+        <div class="muted" style="margin-top:8px">현재위치 → 마지막 지점</div>
+        <div id="gpsDist">—</div>
+      </div>
+
+      <div class="card">
+        <h2>⬟ 영역 <span class="muted">(방목지 · 농장경계)</span></h2>
+        <div id="areaList"><div class="muted">‘영역’ 모드에서 지도를 클릭해 다각형을 그립니다.</div></div>
+        <div class="row" style="margin-top:6px">
+          <button class="primary small" onclick="setMode('area')">＋ 영역 그리기</button>
+          <button class="warn small" onclick="clearAreas()">전체 삭제</button>
+        </div>
+        <div class="muted" style="font-size:10px;margin-top:5px">
+          클릭으로 꼭짓점 추가 · <b>첫 꼭짓점을 다시 클릭</b>하면 닫힙니다 · 라벨은 드래그로 이동<br>
+          잘못 그렸으면 닫은 뒤 목록에서 ✕ 로 지웁니다
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>🏷 텍스트</h2>
+        <div id="textList"><div class="muted">영역과 무관한 설명을 지도에 놓을 수 있습니다.</div></div>
+        <div class="row" style="margin-top:6px">
+          <button class="primary small" onclick="startPlaceText()">＋ 텍스트 놓기</button>
+          <button class="warn small" onclick="clearTexts()">전체 삭제</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>💾 저장 / 불러오기 <span class="muted">(GeoJSON)</span></h2>
+        <input id="ranchInput" type="text" placeholder="목장명 (파일 하나 = 목장 하나)"
+          style="width:100%;padding:7px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--txt);font-size:12px"
+          oninput="saveLocal()">
+        <div class="row" style="margin-top:6px">
+          <button class="primary small" onclick="exportGeoJSON()">⬇ 내보내기</button>
+          <button class="small" onclick="document.getElementById('fileInput').click()">⬆ 불러오기</button>
+          <button class="small" onclick="fitAll()">🔍 전체 보기</button>
+          <button class="warn small" onclick="clearAll()">전체 초기화</button>
+        </div>
+        <input id="fileInput" type="file" accept=".geojson,.json,application/geo+json,application/json"
+               style="display:none" onchange="onFilePick(this)">
+        <div class="muted" style="font-size:10px;margin-top:5px">
+          지도에 파일을 끌어다 놓아도 불러옵니다 · 작업은 자동저장되어 새로고침해도 남습니다<br>
+          <b>GeoMeasure K(국내판)와 파일이 그대로 오갑니다.</b>
+        </div>
+        <div id="importLog"></div>
+      </div>
+
+      <div class="card">
+        <h2>⚙️ 지도</h2>
+        <div class="row" id="mapTypeRow">
+          <button class="small" data-type="satellite" onclick="setMapType('satellite')">위성</button>
+          <button class="small" data-type="hybrid" onclick="setMapType('hybrid')">위성+라벨</button>
+          <button class="small" data-type="roadmap" onclick="setMapType('roadmap')">일반</button>
+          <button class="small" data-type="terrain" onclick="setMapType('terrain')">지형</button>
+        </div>
+        <div class="muted" style="margin-top:6px;font-size:10px">
+          위성 = Google 위성영상(전세계). 국내는 영상이 오래된 지역이 많아
+          <b>GeoMeasure K</b>(카카오 스카이뷰)를 쓰는 편이 낫습니다.
+        </div>
+      </div>
+
+      <!-- 출처 표기: 원본에 LICENSE가 없어 원칙상 원작자 저작권이 살아있다.
+           화면에서도 계보가 보이도록 한 줄 남긴다(README에만 두지 않음). -->
+      <div id="credit">
+        원본 <a href="https://dream2k2.github.io/gmap-plus-fsm-/" target="_blank" rel="noopener">GeoMeasure</a>
+        (dream2k2, Google Maps) →
+        <a href="https://github.com/pye0828-lab/kakaomap_coverage" target="_blank" rel="noopener">GeoMeasure K</a>
+        기능과 동기화(@be7a4d3) · 지도 Google Maps
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 지도 -->
+  <div id="mapWrap">
+    <div id="fabs">
+      <button class="fab" onclick="togglePanel()" title="패널 접기/펴기">☰</button>
+      <button class="fab" onclick="locateMe()" title="내 위치">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round">
+          <circle cx="12" cy="12" r="7.2" stroke-width="2"/>
+          <circle cx="12" cy="12" r="3" stroke-width="2.4"/>
+          <line x1="12" y1="1.2" x2="12" y2="4" stroke-width="2.2"/>
+          <line x1="12" y1="20" x2="12" y2="22.8" stroke-width="2.2"/>
+          <line x1="1.2" y1="12" x2="4" y2="12" stroke-width="2.2"/>
+          <line x1="20" y1="12" x2="22.8" y2="12" stroke-width="2.2"/>
+        </svg>
+      </button>
+    </div>
+    <div id="map"></div>
+    <div id="dropHint">GeoJSON 파일을 놓으면 불러옵니다</div>
+    <div id="mapErr">
+      <div>
+        <b>지도를 불러오지 못했습니다.</b><br>
+        Google Cloud Console 에서 아래를 확인하세요.
+        <ul>
+          <li><b>Maps JavaScript API</b> 사용 설정</li>
+          <li><b>결제 계정 연결</b> — 무료 한도만 써도 필요합니다</li>
+          <li>API 키 제한 → <b>HTTP 리퍼러</b>에 현재 주소
+              (<span id="mapErrOrigin" style="font-family:var(--mono)"></span>) 등록</li>
+          <li><b>할당량(Quota)</b> 초과 여부 — 일 상한을 걸어둔 경우</li>
+        </ul>
+        <span class="why" id="mapErrWhy"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============================================================================
+   [엔진 어댑터 구간 시작]
+   GeoMeasure K(카카오)와 다른 곳은 원칙적으로 이 파일 안에서 Google API 를
+   직접 부르는 지점뿐이다. 계산·GeoJSON·검증·UI 는 K 와 같은 내용을 유지한다.
+   ============================================================================ */
+
+let map, gps=null, gpsMarker=null, gpsCircle=null;
+let pts=[], markers=[], circles=[], segLabels=[], line=null;
+let rubberLine=null, rubberLabel=null;
+let watchId=null, geocoder=null;
+
+/* 영역·텍스트는 기존 pts/markers/circles 처럼 병렬 배열로 늘리지 않는다.
+   병렬 배열은 삭제할 때마다 인덱스를 세 군데 맞춰야 해서(delPt 참조) 항목이
+   늘수록 깨지기 쉽다. 처음부터 id 를 가진 객체 배열로 잡는다. */
+let areas=[];   // {id, path:[{lat,lng}], name, desc, style:{fillColor,strokeColor,opacity}, labelPos, polygon, label}
+let texts=[];   // {id, pos:{lat,lng}, text, fontSize, overlay}
+let areaSeq=0, textSeq=0;
+let drawingManager=null, pendingText=false;
+
+/* 겹침 순서. 영역은 배경, 커버리지 원과 경로는 그 위, 라벨은 항상 최상단.
+   숫자를 이 표 밖에서 직접 쓰지 않는다 — 한 곳만 보면 순서가 파악되도록. */
+const Z={area:1, circle:2, route:3, distLabel:5, areaLabel:6, textLabel:7};
+
+const DEF_FILL='#4cd07d', DEF_STROKE='#4cd07d';
+
+/* 기본 지도 중심 — 에스제이아이티(경기 화성시 능동 1053-1 / 동탄하나1길 54-11).
+   해외용 판이지만 기준점은 K 와 같게 둔다. 위치권한이 없을 때만 쓰이고, 현장에
+   나가면 측위·검색·복원 중 하나가 곧바로 덮어쓰기 때문에 실익이 없는 차이다.
+   (K 와 다른 값을 두면 두 파일을 비교할 때 잡음만 늘어난다) */
+const DEFAULT_CENTER={lat:37.2176523, lng:127.0605514};
+
+/* 카카오 level(작을수록 확대, 1~14) ↔ 구글 zoom(클수록 확대, 0~21) 대응.
+   K 를 옮기며 숫자가 뒤집히므로 여기 한 곳에 모아 두고 본문에서는 이름만 쓴다.
+     K level 3(건물 구분) → G zoom 18
+     K level 4(농장 전체) → G zoom 17
+     K level 6(라벨 한계) → G zoom 15 */
+const ZOOM_CLOSEUP=18, ZOOM_START=17, LABEL_MIN_ZOOM=15;
+
+const fmt = v => v.toFixed(7);
+
+/* 불러온 파일의 이름·설명이 그대로 innerHTML 로 들어간다 — 이스케이프 없이는
+   GeoJSON 하나로 스크립트가 실행된다. 신뢰 경계에서 게으르지 않는다. */
+const ESC_MAP={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c=>ESC_MAP[c]);
+
+/* 색은 CSS 로 흘러가므로 형식을 통과시키지 않으면 스타일 주입이 된다. */
+const COLOR_RE=/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+const safeColor = (c,def) => COLOR_RE.test(String(c||'')) ? String(c) : def;
+
+/* ---------- 지점별 색상 팔레트 ---------- */
+const PALETTE=['#38b6ff','#ff6b6b','#4cd07d','#ffc53d','#b28dff','#ff9f43','#00d2d3','#ff7eb3','#7bed9f','#e84393'];
+const colorOf=i=>PALETTE[i%PALETTE.length];
+
+/* ---------- 거리 ----------
+   구면 하버사인. 반경 6378137 m 는 WGS84 적도반경으로, 원본 도구(Google
+   spherical geometry)가 쓰던 값과 동일하다. 여기를 흔히 쓰는 평균반경
+   6371000 으로 바꾸면 결과가 약 0.11% 작아져 원본 대조표(용춘목장 실측)와
+   어긋난다 — 상수는 바꾸지 말 것. K 와 같은 값을 내야 GeoJSON 을 주고받는
+   의미가 있다.
+   구글에는 geometry 라이브러리의 computeDistanceBetween 이 있지만 쓰지 않는다.
+   같은 식을 두 엔진이 각자 부르면 결과가 갈릴 여지가 생기고, 라이브러리를 하나
+   더 불러야 한다(무료 한도 관리 대상도 늘어난다).
+   ponytail: 지구를 구로 근사한다. 위도 33°N 에서 WGS84 타원체 실측 대비 최대
+   약 +0.35% 과대(예: 355.5 m 구간에서 +1.2 m). 커버리지 가늠 용도에는 충분하며,
+   측량 정밀도가 필요해지면 Vincenty 역계산으로 교체. */
+const EARTH_R = 6378137;
+function haversine(a,b){
+  const t=x=>x*Math.PI/180;
+  const dLat=t(b.lat-a.lat), dLng=t(b.lng-a.lng);
+  const h=Math.sin(dLat/2)**2+Math.cos(t(a.lat))*Math.cos(t(b.lat))*Math.sin(dLng/2)**2;
+  return 2*EARTH_R*Math.asin(Math.sqrt(h));
+}
+function fmtDist(m){
+  return m>=1000 ? (m/1000).toFixed(3)+' km' : m.toFixed(1)+' m';
+}
+
+/* ---------- 자체 점검 (?selfcheck=1) ----------
+   거리 계산이 깨지면 실패하는 최소 확인 하나. 기준값은 원본 도구로 측정한
+   용춘목장 A/B/C 실측(상위 지침 §4). 지도 SDK 없이 돌아가므로 API 키가 없는
+   상태에서도 검증할 수 있다 — G 는 키 확보 전에 만들어졌으므로 특히 중요하다. */
+function selfcheck(){
+  const A={lat:33.4011689,lng:126.3664674},
+        B={lat:33.4022213,lng:126.3647669},
+        C={lat:33.4042634,lng:126.3655233};
+  const cases=[['A↔B',haversine(A,B),196.7],
+               ['B↔C',haversine(B,C),237.9],
+               ['C↔A(폐합)',haversine(C,A),355.5],
+               ['전체거리',haversine(A,B)+haversine(B,C),434.7],
+               ['둘레',haversine(A,B)+haversine(B,C)+haversine(C,A),790.1]];
+  const lines=cases.map(([name,got,want])=>{
+    const ok=Math.abs(got-want)<=0.1;      // 기준값이 0.1 m 단위 반올림이라 허용오차도 0.1 m
+    return (ok?'PASS':'FAIL')+'  '+name.padEnd(11)+' 기대 '+want.toFixed(1)+' m / 실제 '+got.toFixed(1)+' m';
+  });
+  const failed=cases.filter(([,got,want])=>Math.abs(got-want)>0.1).length;
+  const out='GeoMeasure G 자체 점검 — 용춘목장 실측 대조 (GeoMeasure K 와 같은 값이어야 함)\n\n'
+    +lines.join('\n')+'\n\n'+(failed?('실패 '+failed+'건 — 거리 계산부를 확인하세요'):'전체 통과');
+  console.log(out);
+  const el=document.createElement('pre');
+  el.id='selfcheck'; el.textContent=out;
+  document.body.appendChild(el);
+}
+if(new URLSearchParams(location.search).has('selfcheck')) selfcheck();
+
+/* ---------- 모드 (측정 / 영역 / 보기) ----------
+   원래는 measuring 불리언 하나가 지도 클릭을 독점했다. 영역 그리기가 들어오면
+   같은 클릭이 꼭짓점 찍기가 되어야 하는데, 드로잉 매니저는 클릭을 자체적으로
+   가로챈다 — 그래서 불리언을 3-way 로 "교체"하고(추가가 아니다) 매니저의
+   그리기 모드를 이 함수 한 곳에서만 바꾼다. 배타 처리를 여기 몰아두지 않으면
+   "측정이 안 되는" 증상이 호출부마다 재발한다. */
+const MODE_HINT={
+  measure:'지도를 탭하면 측정 지점이 추가됩니다.',
+  area:'클릭으로 꼭짓점 추가 · 첫 꼭짓점을 다시 클릭하면 영역이 닫힙니다.',
+  view:'보기 모드 — 지도 클릭이 무시됩니다. 라벨 드래그는 됩니다.'
+};
+let mode='measure';
+const measuringNow = () => mode==='measure';
+
+function setMode(m){
+  if(!MODE_HINT[m]) return;
+  mode=m;
+  if(m!=='measure') hideRubber();
+  if(m!=='view') pendingText=false;
+  // 드로잉 매니저가 살아있으면 클릭 주인이 바뀐다. 영역 모드가 아닐 때 반드시
+  // null 로 되돌려야 측정 클릭이 되살아난다.
+  if(drawingManager){
+    drawingManager.setDrawingMode(m==='area' ? google.maps.drawing.OverlayType.POLYGON : null);
+  }
+  document.querySelectorAll('#modeRow button').forEach(b=>b.classList.toggle('on', b.dataset.mode===m));
+  document.getElementById('modeHint').textContent=MODE_HINT[m];
+  setMeasureUI();
+}
+function setMeasureUI(){
+  const b=document.getElementById('measureBtn');
+  if(b) b.textContent=measuringNow()?'✋ 지정 종료':'▶ 지정 재개';
+}
+function toggleMeasure(){ setMode(measuringNow()?'view':'measure'); }
+function finishMeasure(){
+  if(!measuringNow()) return;
+  setMode('view');
+  toast('지점 지정 종료 (재개: 상단 📏 측정)');
+}
+
+/* ---------- 좌표 변환 헬퍼 ----------
+   구글은 {lat,lng} 리터럴을 그대로 받아 주지만, 돌려줄 때는 LatLng 객체다.
+   내부 상태는 K 와 똑같은 평범한 {lat,lng} 로 유지하고 경계에서만 변환한다
+   (계산·저장 코드가 SDK 에 안 묶인다).
+   K 의 toPt 는 getLat()/getLng() 였다 — 구글은 lat()/lng() 로 이름이 다르다. */
+const LL = p => ({lat:p.lat, lng:p.lng});          // 구글은 리터럴을 그대로 받는다
+const toPt = ll => ({lat:ll.lat(), lng:ll.lng()});
+
+/* ---------- 마커 모양 ----------
+   구글 Marker 는 글자 라벨을 네이티브로 지원한다(K 는 지원하지 않아 색 원+글자를
+   SVG 데이터 URI 로 그려야 했다). 원 기호 + label 조합이면 마커 하나로 끝난다.
+   ponytail: google.maps.Marker 는 2024 년부터 지원 중단 예고(deprecated) 상태다.
+   후속인 AdvancedMarkerElement 는 mapId 가 있어야 뜨고, 없으면 조용히 아무것도
+   안 그려진다 — 실지도 검증 없이 만드는 지금 단계에서는 실패 모드가 나쁘다.
+   키를 확보해 화면 확인이 가능해지면 그때 AdvancedMarkerElement 로 올린다. */
+function markerIcon(color){
+  return {path:google.maps.SymbolPath.CIRCLE, scale:12, fillColor:color,
+          fillOpacity:1, strokeColor:'#fff', strokeWeight:2};
+}
+const markerLabel = letter => ({text:letter, color:'#111', fontWeight:'800', fontSize:'12px'});
+const letterOf = i => String.fromCharCode(65+(i%26));   // A, B, C...
+
+/* ---------- 반경 원 ---------- */
+function radiusVal(){ return Math.max(1, parseFloat(document.getElementById('radiusInput').value)||500); }
+function radiusOn(){ return document.getElementById('radiusToggle').checked; }
+function makeCircle(lat,lng,i){
+  const c=colorOf(i);
+  const circle=new google.maps.Circle({
+    center:{lat,lng}, radius:radiusVal(), zIndex:Z.circle, clickable:false,
+    fillColor:c, fillOpacity:.13,
+    strokeColor:c, strokeOpacity:.85, strokeWeight:1.5});
+  // 구글 Circle 에는 setVisible 이 있지만 K 와 같은 방식(setMap)으로 통일한다 —
+  // 두 파일을 나란히 놓고 볼 때 차이가 적을수록 이식 누락을 찾기 쉽다.
+  circle.setMap(radiusOn()?map:null);
+  return circle;
+}
+function applyRadius(){
+  const r=radiusVal(), on=radiusOn();
+  circles.forEach(c=>{ c.setRadius(r); c.setMap(on?map:null); });
+  saveLocal();   // 반경은 사용자가 정한 값이라 반드시 남긴다(계산값과 다르다)
+}
+
+/* ---------- 지도 위 DOM 오버레이 ----------
+   구글에는 카카오 CustomOverlay 에 해당하는 클래스가 없다. OverlayView 를 상속해
+   같은 역할(좌표에 고정되는 DOM)을 만들고, 인터페이스를 K 와 맞춘다
+   (setPosition / getPosition / setMap / .el) — 그래야 이 아래 코드가 엔진 차이를
+   모른 채 K 와 같은 모양으로 남는다.
+   google.maps 가 로드된 뒤에만 상속할 수 있어 클래스 정의를 initMap 시점으로 미룬다. */
+let HtmlOverlay=null;
+function defineOverlayClass(){
+  HtmlOverlay = class extends google.maps.OverlayView {
+    constructor(pos, el, zIndex){
+      super();
+      this.pos=pos; this.el=el;
+      el.style.position='absolute';
+      el.style.zIndex=zIndex;
+      // K 의 xAnchor:.5 / yAnchor:.5 (좌표가 요소의 중앙) 와 같게 맞춘다
+      el.style.transform='translate(-50%,-50%)';
+    }
+    onAdd(){
+      // overlayMouseTarget 이어야 라벨 드래그의 mousedown 이 들어온다.
+      // 거리 라벨은 CSS pointer-events:none 으로 클릭을 통과시킨다.
+      this.getPanes().overlayMouseTarget.appendChild(this.el);
+    }
+    draw(){
+      const proj=this.getProjection();
+      if(!proj) return;
+      const p=proj.fromLatLngToDivPixel(new google.maps.LatLng(this.pos.lat, this.pos.lng));
+      if(!p) return;
+      this.el.style.left=p.x+'px';
+      this.el.style.top =p.y+'px';
+    }
+    onRemove(){ if(this.el.parentNode) this.el.parentNode.removeChild(this.el); }
+    setPosition(p){ this.pos=p; this.draw(); }
+    getPosition(){ return this.pos; }
+  };
+}
+
+/* ---------- 거리 라벨 (지도 위 텍스트) ----------
+   내용 div 를 들고 있다가 텍스트만 갈아끼우면 재생성 비용이 없다. */
+function makeDistLabel(pos, text, color){
+  const el=document.createElement('div');
+  el.className='dist-label';
+  el.style.color=color||'#4cd07d';
+  el.textContent=text;
+  const ov=new HtmlOverlay(pos, el, Z.distLabel);
+  ov.setMap(map);
+  return ov;
+}
+function midOf(a,b){
+  // ponytail: 라벨을 놓을 자리라 대권(大圈) 보간 대신 산술 평균으로 끝낸다.
+  // 수백 m 구간에서는 오차가 mm 수준. 수십 km 짜리를 재게 되면 중점이 눈에
+  // 띄게 치우칠 수 있고, 그때는 구면 보간으로 바꾸면 된다.
+  return {lat:(a.lat+b.lat)/2, lng:(a.lng+b.lng)/2};
+}
+
+/* ---------- 러버밴드 (마지막 지점 → 커서, 점선 + 거리 미리보기) ----------
+   구글 Polyline 에는 strokeStyle:'shortdash' 가 없다. 선을 투명하게 두고
+   점 기호를 일정 간격으로 반복해 점선을 만든다(원본 GeoMeasure 와 같은 방식). */
+const DASH_ICON={path:'M 0,-1 0,1', strokeOpacity:.9, strokeColor:'#38b6ff', scale:2.5};
+function updateRubber(cursorPt){
+  if(!pts.length || !cursorPt){ hideRubber(); return; }
+  const last=pts[pts.length-1];
+  const path=[LL(last), LL(cursorPt)];
+  if(!rubberLine){
+    rubberLine=new google.maps.Polyline({path, clickable:false, strokeOpacity:0,
+      icons:[{icon:DASH_ICON, offset:'0', repeat:'14px'}]});
+    rubberLine.setMap(map);
+  }else rubberLine.setPath(path);
+  const d=haversine(last, cursorPt);
+  const mid=midOf(last, cursorPt);
+  if(!rubberLabel) rubberLabel=makeDistLabel(mid, fmtDist(d), '#4cd07d');
+  else{ rubberLabel.setPosition(mid); rubberLabel.el.textContent=fmtDist(d); }
+}
+function hideRubber(){
+  if(rubberLine){ rubberLine.setMap(null); rubberLine=null; }
+  if(rubberLabel){ rubberLabel.setMap(null); rubberLabel=null; }
+}
+
+function undoPt(){
+  if(!pts.length){ toast('취소할 지점이 없습니다'); return; }
+  delPt(pts.length-1);
+}
+
+/* 지점 이름 편집. renderPts() 를 부르면 입력 중인 칸이 다시 그려지며 포커스가
+   날아간다 — 구간 표(#segList)는 입력칸이 없는 영역이라 갱신해도 안전하다. */
+function editPt(i,v){
+  const p=pts[i];
+  if(!p) return;
+  p.name=String(v).slice(0,40);
+  syncMarkerTitles();
+  updateDist();
+  saveLocal();
+}
+let markerClickAt=0;   // 마커 클릭이 지도 클릭으로 번지는 경우를 걸러내는 시각
+function highlightPt(i){
+  if(i<0) return;
+  const el=document.getElementById('pt-'+i);
+  if(!el) return;
+  document.querySelectorAll('.pt.hl').forEach(x=>x.classList.remove('hl'));
+  el.classList.add('hl');
+  el.scrollIntoView({block:'nearest'});
+}
+
+/* ---------- 장소/좌표 검색 ---------- */
+let searchMarker=null, searchResultsData=[];
+/* 검색 마커는 "여기를 찾았다"는 안내일 뿐 측정 데이터가 아니다(GeoJSON 에도 안
+   들어간다). 확인한 뒤엔 시야만 가리므로 지우는 길을 열어둔다 — 지도 중심·줌은
+   건드리지 않아 찾아간 자리는 그대로 남는다. */
+function clearSearchMarker(byUser){
+  if(searchMarker){ searchMarker.setMap(null); searchMarker=null; }
+  const b=document.getElementById('clearSearchBtn');
+  if(b) b.style.display='none';
+  if(byUser) toast('검색 마커를 지웠습니다 (지도 위치는 그대로)');
+}
+function showSearchAt(lat,lng,label){
+  // 검색은 화면을 옮기는 동작일 뿐이므로 데이터를 건드리지 않는다(자동저장이
+  // 붙어 있어 여기서 지우면 localStorage 까지 덮어써 작업이 사라진다).
+  clearSearchMarker();
+  searchMarker=new google.maps.Marker({position:{lat,lng}, map, title:label||'검색 위치'});
+  // 마커 자체를 눌러도 지워지게 한다(버튼까지 가지 않아도 되도록)
+  searchMarker.addListener('click', ()=>clearSearchMarker(true));
+  const b=document.getElementById('clearSearchBtn');
+  if(b) b.style.display='';
+  map.panTo({lat,lng});
+  map.setZoom(ZOOM_CLOSEUP);
+  if(label) toast('📍 '+label);
+}
+function doSearch(){
+  const q=document.getElementById('searchInput').value.trim();
+  const box=document.getElementById('searchResults');
+  box.innerHTML='';
+  if(!q){ toast('검색어를 입력하세요'); return; }
+  // 좌표 형식 판별: "-25.263, -57.575" / "33.401 126.366"
+  const m=q.match(/^(-?\d{1,3}(?:\.\d+)?)[,\s]+(-?\d{1,3}(?:\.\d+)?)$/);
+  if(m){
+    let lat=parseFloat(m[1]), lng=parseFloat(m[2]);
+    if(Math.abs(lat)>90 && Math.abs(lng)<=90){ [lat,lng]=[lng,lat]; toast('위도/경도 순서를 자동 보정했습니다'); }
+    if(Math.abs(lat)>90 || Math.abs(lng)>180){ toast('좌표 범위 오류 (위도 ±90, 경도 ±180)'); return; }
+    showSearchAt(lat,lng, fmt(lat)+', '+fmt(lng));
+    return;
+  }
+  if(!geocoder){ toast('지도 로딩 후 다시 시도하세요'); return; }
+  /* K 는 장소(Places)와 주소(Geocoder) 두 API 를 순서대로 썼다. 여기서는
+     Geocoder 하나만 쓴다 — Places 는 무료 한도가 더 작은 별도 SKU 라 "무료
+     한도 안에서만 쓰고 넘으면 멈춘다"는 운영 방침에서 관리 지점이 하나 늘고,
+     이 도구의 검색은 좌표·주소로 현장을 찾아가는 용도가 대부분이다.
+     ponytail: 그래서 상호명(예: "○○목장") 검색은 K 보다 약하다. 상호로 찾아야
+     하는 일이 잦아지면 places 라이브러리를 추가하고 여기 앞단에 끼우면 된다. */
+  geocoder.geocode({address:q, language:'ko'}, (res,status)=>{
+    if(status==='OK' && res && res.length){
+      pickOrList(res.map(r=>({
+        label:r.formatted_address,
+        lat:r.geometry.location.lat(), lng:r.geometry.location.lng()})));
+    }else if(status==='ZERO_RESULTS'){
+      toast('검색 결과 없음: '+q);
+    }else if(status==='REQUEST_DENIED'){
+      // 지도는 떠도 Geocoding API 만 꺼져 있는 경우가 실제로 흔하다
+      toast('검색 거부됨 — Geocoding API 사용 설정을 확인하세요');
+      showImportLog(['검색 실패(REQUEST_DENIED): Google Cloud Console 에서 '
+        +'Geocoding API 사용 설정과 키 제한을 확인하세요']);
+    }else if(status==='OVER_QUERY_LIMIT'){
+      toast('검색 할당량을 넘었습니다 — 오늘은 좌표로 이동하세요');
+    }else toast('검색 실패: '+status);
+  });
+}
+function pickOrList(list){
+  searchResultsData=list;
+  if(list.length===1){ showSearchAt(list[0].lat, list[0].lng, list[0].label); return; }
+  document.getElementById('searchResults').innerHTML=
+    '<div class="muted" style="font-size:10px;margin-bottom:4px">결과 '+list.length+'건 — 선택하세요</div>'
+    + list.map((r,i)=>
+      '<div onclick="pickResult('+i+')" style="padding:7px 8px;margin-bottom:4px;border:1px solid var(--line);'
+      +'border-radius:8px;background:var(--bg);font-size:12px;cursor:pointer;line-height:1.4">'
+      + esc(r.label) +'</div>').join('');
+}
+function pickResult(i){
+  const r=searchResultsData[i];
+  if(!r) return;
+  showSearchAt(r.lat, r.lng, r.label);
+  document.getElementById('searchResults').innerHTML='';
+}
+
+/* ================= 영역(폴리곤) · 텍스트 · GeoJSON =================== */
+
+/* ---------- 면적 ----------
+   ponytail: 위경도를 이 위도 기준 등거리 평면으로 근사 투영한 뒤 신발끈 공식.
+   구면 초과를 무시하므로 수 km 규모 방목지에서 오차는 0.1% 미만이고, 수십 km
+   짜리를 재게 되면 측지 면적(Karney)으로 교체한다.
+   면적은 좌표에서 매번 다시 계산한다 — 저장하면 꼭짓점을 옮겼을 때 어긋난다. */
+function polyArea(path){
+  if(!path || path.length<3) return 0;
+  const rad=Math.PI/180;
+  const lat0=path.reduce((s,p)=>s+p.lat,0)/path.length*rad;
+  const xy=path.map(p=>({x:EARTH_R*Math.cos(lat0)*p.lng*rad, y:EARTH_R*p.lat*rad}));
+  let a=0;
+  for(let i=0,n=xy.length;i<n;i++){ const j=(i+1)%n; a+=xy[i].x*xy[j].y-xy[j].x*xy[i].y; }
+  return Math.abs(a/2);
+}
+function fmtArea(m2){
+  return m2>=10000 ? (m2/10000).toFixed(2)+' ha' : Math.round(m2).toLocaleString()+' ㎡';
+}
+function centroidOf(path){
+  // ponytail: 단순 평균이라 오목한 도형에서는 중심이 도형 밖으로 나간다.
+  // 자동배치를 정교하게 만들지 않고 첫 위치만 잡아준 뒤 드래그로 해결한다.
+  const n=path.length;
+  return {lat:path.reduce((s,p)=>s+p.lat,0)/n, lng:path.reduce((s,p)=>s+p.lng,0)/n};
+}
+
+/* ---------- 드래그 가능한 지도 라벨 ----------
+   OverlayView 에는 드래그 기능이 없다. 라벨 DOM 에서 포인터를 잡고 지도 투영으로
+   픽셀→좌표를 되돌린다. 드래그 중에는 지도 자체가 같이 끌려가므로 제스처를 끈다.
+   K 는 map.setDraggable/setZoomable 이었고 구글은 setOptions 로 한 번에 끈다. */
+function makeDraggableLabel(pos, el, zIndex, onMoved){
+  const ov=new HtmlOverlay(pos, el, zIndex);
+  ov.setMap(map);
+  const mapEl=document.getElementById('map');
+  let dragging=false;
+  const pointOf=e=>{
+    const t=(e.touches && e.touches[0]) || e;
+    const r=mapEl.getBoundingClientRect();
+    return new google.maps.Point(t.clientX-r.left, t.clientY-r.top);
+  };
+  const move=e=>{
+    if(!dragging) return;
+    e.preventDefault();
+    const proj=ov.getProjection();
+    if(!proj) return;
+    ov.setPosition(toPt(proj.fromContainerPixelToLatLng(pointOf(e))));
+  };
+  const up=()=>{
+    if(!dragging) return;
+    dragging=false;
+    map.setOptions({gestureHandling:'greedy'});
+    el.classList.remove('dragging');
+    document.removeEventListener('mousemove',move);
+    document.removeEventListener('mouseup',up);
+    document.removeEventListener('touchmove',move);
+    document.removeEventListener('touchend',up);
+    onMoved(ov.getPosition());
+  };
+  const down=e=>{
+    if(dragging) return;
+    dragging=true;
+    map.setOptions({gestureHandling:'none'});
+    el.classList.add('dragging');
+    e.stopPropagation();
+    document.addEventListener('mousemove',move);
+    document.addEventListener('mouseup',up);
+    document.addEventListener('touchmove',move,{passive:false});
+    document.addEventListener('touchend',up);
+  };
+  el.addEventListener('mousedown',down);
+  el.addEventListener('touchstart',down,{passive:true});
+  return ov;
+}
+
+/* 줌아웃하면 라벨이 서로 겹쳐 못 읽는다. 오버레이는 화면 픽셀 고정 크기라
+   축소해도 작아지지 않으므로, 임계 줌 아래로 내려가면 통째로 숨긴다.
+   (구글 zoom 은 숫자가 작을수록 축소 — K 의 level 과 부등호 방향이 반대다) */
+function applyLabelVisibility(){
+  const on = map.getZoom()>=LABEL_MIN_ZOOM;
+  areas.forEach(a=>a.label.setMap(on?map:null));
+  texts.forEach(t=>t.overlay.setMap(on?map:null));
+}
+
+/* ---------- 영역 ---------- */
+function addArea(o){
+  const a={
+    id:++areaSeq,
+    path:o.path,
+    name:o.name || ('영역 '+(areas.length+1)),
+    desc:o.desc || '',
+    style:o.style || {fillColor:DEF_FILL, strokeColor:DEF_STROKE, opacity:.3},
+    labelPos:o.labelPos || centroidOf(o.path)
+  };
+  // 구글 Polygon 은 path 가 아니라 paths(구멍 뚫린 다각형을 위해 링의 배열)다
+  a.polygon=new google.maps.Polygon({
+    paths:a.path.map(LL), zIndex:Z.area, clickable:false,
+    fillColor:a.style.fillColor, fillOpacity:a.style.opacity,
+    strokeColor:a.style.strokeColor, strokeOpacity:.9, strokeWeight:2});
+  a.polygon.setMap(map);
+  const el=document.createElement('div');
+  el.className='map-label area-label';
+  a.label=makeDraggableLabel(a.labelPos, el, Z.areaLabel, p=>{ a.labelPos=p; saveLocal(); });
+  paintAreaLabel(a);
+  areas.push(a);
+  renderAreas(); applyLabelVisibility(); saveLocal();
+  return a;
+}
+function paintAreaLabel(a){
+  const el=a.label.el;
+  el.style.borderColor=a.style.strokeColor;
+  el.innerHTML='<b>'+esc(a.name)+'</b>'
+    + (a.desc ? '<span>'+esc(a.desc)+'</span>' : '')
+    + '<span class="dim">'+fmtArea(polyArea(a.path))+'</span>';
+}
+function editArea(id,k,v){
+  const a=areas.find(x=>x.id===id);
+  if(!a) return;
+  if(k==='name')            a.name=String(v).slice(0,60);
+  else if(k==='desc')       a.desc=String(v).slice(0,300);
+  else if(k==='fillColor'){ a.style.fillColor=safeColor(v,DEF_FILL);     a.polygon.setOptions({fillColor:a.style.fillColor}); }
+  else if(k==='strokeColor'){a.style.strokeColor=safeColor(v,DEF_STROKE);a.polygon.setOptions({strokeColor:a.style.strokeColor}); }
+  else if(k==='opacity'){   a.style.opacity=Math.min(1,Math.max(0,parseFloat(v)||0)); a.polygon.setOptions({fillOpacity:a.style.opacity}); }
+  paintAreaLabel(a);
+  // 여기서 renderAreas() 를 부르면 입력 중인 칸이 다시 그려지며 포커스가 날아간다.
+  saveLocal();
+}
+function delArea(id){
+  const i=areas.findIndex(x=>x.id===id);
+  if(i<0) return;
+  areas[i].polygon.setMap(null);
+  areas[i].label.setMap(null);
+  areas.splice(i,1);
+  renderAreas(); saveLocal();
+}
+/* silent = 불러오기처럼 내부에서 비울 때. 버튼으로 눌렀을 때는 반드시 결과를
+   말해준다 — 아무 반응이 없으면 고장인지 빈 상태인지 구분할 수 없다. */
+function clearAreas(silent){
+  const n=areas.length;
+  areas.forEach(a=>{ a.polygon.setMap(null); a.label.setMap(null); });
+  areas=[];
+  renderAreas(); saveLocal();
+  if(!silent) toast(n ? ('영역 '+n+'개를 삭제했습니다') : '삭제할 영역이 없습니다');
+}
+function renderAreas(){
+  const el=document.getElementById('areaList');
+  if(!areas.length){ el.innerHTML='<div class="muted">‘영역’ 모드에서 지도를 클릭해 다각형을 그립니다.</div>'; return; }
+  el.innerHTML=areas.map(a=>`<div class="item">
+    <div class="item-head">
+      <input type="text" value="${esc(a.name)}" maxlength="60" oninput="editArea(${a.id},'name',this.value)">
+      <button class="del" onclick="delArea(${a.id})">✕</button>
+    </div>
+    <div class="item-row">
+      <input type="text" value="${esc(a.desc)}" maxlength="300" placeholder="설명(선택)" oninput="editArea(${a.id},'desc',this.value)">
+    </div>
+    <div class="item-row">
+      <label>채움<input type="color" value="${esc(a.style.fillColor)}" oninput="editArea(${a.id},'fillColor',this.value)"></label>
+      <label>선<input type="color" value="${esc(a.style.strokeColor)}" oninput="editArea(${a.id},'strokeColor',this.value)"></label>
+      <label>투명도<input type="range" min="0" max="1" step="0.05" value="${a.style.opacity}" oninput="editArea(${a.id},'opacity',this.value)"></label>
+    </div>
+    <div class="muted mono">${fmtArea(polyArea(a.path))} · 꼭짓점 ${a.path.length}개</div>
+  </div>`).join('');
+}
+
+/* ---------- 드로잉 매니저 ----------
+   그리기 제스처만 라이브러리에 맡기고, 결과는 곧바로 우리 areas[] 로 옮긴다.
+   매니저가 만든 오버레이를 그대로 두면 같은 도형이 두 번 그려지고 스타일·삭제·
+   내보내기가 두 곳으로 갈린다.
+   K 는 drawend 뒤 getData() 로 좌표를 되읽어야 했지만(콜백 인자 구조가 카카오
+   문서에 없다), 구글은 polygoncomplete 가 완성된 Polygon 을 그대로 넘겨준다.
+   그래서 되읽기·중복 제거 절차가 통째로 사라진다. */
+function initDrawing(){
+  if(!(google.maps.drawing && google.maps.drawing.DrawingManager)){
+    // 라이브러리가 안 붙어도 측정 기능은 살아있어야 한다. 영역 모드만 막는다.
+    const b=document.querySelector('#modeRow button[data-mode="area"]');
+    if(b){ b.disabled=true; b.title='드로잉 라이브러리를 불러오지 못했습니다'; }
+    return;
+  }
+  drawingManager=new google.maps.drawing.DrawingManager({
+    map,
+    drawingMode:null,
+    drawingControl:false,          // 모드 전환은 우리 모드바가 유일한 스위치다
+    polygonOptions:{strokeColor:DEF_STROKE, fillColor:DEF_FILL, fillOpacity:.3,
+                    strokeWeight:2, clickable:false, editable:false, zIndex:Z.area}
+  });
+  drawingManager.addListener('polygoncomplete', poly=>{
+    const path=normPath(poly.getPath().getArray());
+    poly.setMap(null);            // 매니저가 만든 사본은 areas[] 와 중복이라 즉시 버린다
+    if(path.length<3){
+      // 조용히 넘어가면 "그렸는데 아무 일도 안 난다"가 된다 — 원인을 화면에 남긴다.
+      toast('영역을 읽지 못했습니다 (꼭짓점 '+path.length+'개)');
+      showImportLog(['드로잉 결과에서 좌표를 얻지 못했습니다 (꼭짓점 '+path.length+'개)']);
+    }else{
+      addArea({path});
+      toast('영역 추가됨 — 패널에서 이름·색을 지정하세요');
+    }
+    // 연속으로 여러 개 그릴 수 있게 다시 그리기 대기 상태로 둔다
+    if(mode==='area') drawingManager.setDrawingMode(google.maps.drawing.OverlayType.POLYGON);
+  });
+}
+/* 폴리곤 좌표 정규화. 구글은 LatLng(lat()/lng() 메서드)을 주지만, 불러온 데이터나
+   테스트에서는 평범한 {lat,lng} 리터럴도 들어온다. SDK 경계에서 한 번만 흡수하고
+   범위를 벗어난 좌표는 여기서 버린다. */
+function normPath(raw){
+  if(!Array.isArray(raw)) return [];
+  return raw.map(c=>{
+    if(!c) return null;
+    if(typeof c.lat==='function' && typeof c.lng==='function') return {lat:c.lat(), lng:c.lng()};
+    if(isFinite(c.lat) && isFinite(c.lng)) return {lat:+c.lat, lng:+c.lng};
+    return null;
+  }).filter(p=>p && Math.abs(p.lat)<=90 && Math.abs(p.lng)<=180);
+}
+
+/* ---------- 독립 텍스트 ---------- */
+function startPlaceText(){
+  // 드로잉 매니저가 클릭을 쥐고 있으면 텍스트를 놓을 수 없다 — 보기 모드로 내린다.
+  setMode('view');
+  pendingText=true;
+  document.getElementById('modeHint').textContent='텍스트를 놓을 위치를 지도에서 클릭하세요.';
+  toast('텍스트를 놓을 위치를 클릭하세요');
+}
+function addText(pos,o){
+  o=o||{};
+  const t={id:++textSeq, pos, text:o.text||'설명', fontSize:o.fontSize||14};
+  const el=document.createElement('div');
+  el.className='map-label text-label';
+  t.overlay=makeDraggableLabel(pos, el, Z.textLabel, p=>{ t.pos=p; saveLocal(); });
+  paintText(t);
+  texts.push(t);
+  renderTexts(); applyLabelVisibility(); saveLocal();
+  return t;
+}
+function paintText(t){
+  t.overlay.el.style.fontSize=t.fontSize+'px';
+  t.overlay.el.textContent=t.text;   // textContent 라 이스케이프 불필요
+}
+function editText(id,k,v){
+  const t=texts.find(x=>x.id===id);
+  if(!t) return;
+  if(k==='text') t.text=String(v).slice(0,200);
+  else if(k==='fontSize') t.fontSize=Math.min(48,Math.max(8,parseInt(v,10)||14));
+  paintText(t); saveLocal();
+}
+function delText(id){
+  const i=texts.findIndex(x=>x.id===id);
+  if(i<0) return;
+  texts[i].overlay.setMap(null);
+  texts.splice(i,1);
+  renderTexts(); saveLocal();
+}
+function clearTexts(silent){
+  const n=texts.length;
+  texts.forEach(t=>t.overlay.setMap(null));
+  texts=[];
+  renderTexts(); saveLocal();
+  if(!silent) toast(n ? ('텍스트 '+n+'개를 삭제했습니다') : '삭제할 텍스트가 없습니다');
+}
+function renderTexts(){
+  const el=document.getElementById('textList');
+  if(!texts.length){ el.innerHTML='<div class="muted">영역과 무관한 설명을 지도에 놓을 수 있습니다.</div>'; return; }
+  el.innerHTML=texts.map(t=>`<div class="item">
+    <div class="item-head">
+      <input type="text" value="${esc(t.text)}" maxlength="200" oninput="editText(${t.id},'text',this.value)">
+      <button class="del" onclick="delText(${t.id})">✕</button>
+    </div>
+    <div class="item-row">
+      <label>크기<input type="range" min="8" max="48" step="1" value="${t.fontSize}" oninput="editText(${t.id},'fontSize',this.value)"></label>
+    </div>
+  </div>`).join('');
+}
+
+/* ================= GeoJSON 내보내기 / 불러오기 =====================
+   저장 포맷을 자체 JSON 이 아니라 GeoJSON 으로 잡는 이유는 지도 엔진을 바꿔도
+   현장 데이터가 살아남아야 하기 때문이다. GeoMeasure K 와 이 파일이 같은 포맷을
+   쓰므로 국내판에서 만든 파일을 여기서 그대로 열 수 있다(그 반대도 된다).
+   GeoJSON 표준에 원·텍스트 개념이 없어 Point + properties 로 쓴다. 우리 도구끼리
+   왕복되면 충분하고 외부 GIS 완전 호환은 범위 밖이다.
+   계산으로 나오는 값(거리·면적)은 저장하지 않는다 — 좌표를 옮겼을 때 어긋난
+   파일이 되기 때문. 반대로 반경은 사용자가 정한 값이라 반드시 저장한다. */
+const GJ_VERSION=1;
+const ranchName = () => document.getElementById('ranchInput').value.trim();
+
+function ringOf(path){
+  const r=path.map(p=>[p.lng,p.lat]);
+  // GeoJSON Polygon 의 링은 첫 점과 끝 점이 같아야 한다(닫힘)
+  if(r.length && (r[0][0]!==r[r.length-1][0] || r[0][1]!==r[r.length-1][1])) r.push(r[0].slice());
+  return r;
+}
+function buildGeoJSON(){
+  const feats=[], r=radiusVal();
+  pts.forEach((p,i)=>feats.push({type:'Feature',
+    geometry:{type:'Point', coordinates:[p.lng,p.lat]},
+    // label·color 는 순서에서 파생되는 표시값이고, name 이 사용자가 넣은 값이다.
+    // name 이 비면 키 자체를 뺀다(JSON.stringify 가 undefined 를 생략한다).
+    properties:{kind:'gw', radius:r, label:letterOf(i),
+                name:p.name || undefined, color:colorOf(i)}}));
+  areas.forEach(a=>feats.push({type:'Feature',
+    geometry:{type:'Polygon', coordinates:[ringOf(a.path)]},
+    properties:{kind:'area', name:a.name, desc:a.desc,
+      fillColor:a.style.fillColor, strokeColor:a.style.strokeColor, opacity:a.style.opacity,
+      labelPos:[a.labelPos.lng, a.labelPos.lat]}}));
+  texts.forEach(t=>feats.push({type:'Feature',
+    geometry:{type:'Point', coordinates:[t.pos.lng,t.pos.lat]},
+    properties:{kind:'text', text:t.text, fontSize:t.fontSize}}));
+  // 경로는 GW 지점에서 파생되는 값이다. 외부 뷰어에서 선이 보이도록 내보내기에는
+  // 넣되, 불러올 때는 무시하고 지점에서 다시 그린다(중복 생성 방지).
+  if(pts.length>=2) feats.push({type:'Feature',
+    geometry:{type:'LineString', coordinates:pts.map(p=>[p.lng,p.lat])},
+    properties:{kind:'route'}});
+  const name=ranchName();
+  return {type:'FeatureCollection', name,
+    // app 은 표기용이다. 불러오기가 이 값을 검사하지 않으므로 GeoMeasure K 가
+    // 내보낸 파일도, 예전 이름으로 내보낸 파일도 그대로 읽힌다.
+    properties:{app:'GeoMeasure G', version:GJ_VERSION, ranch:name,
+                created:new Date().toISOString().slice(0,10)},
+    features:feats};
+}
+function exportGeoJSON(){
+  const gj=buildGeoJSON();
+  if(!gj.features.length){ toast('저장할 내용이 없습니다'); return; }
+  const base=(gj.name||'geomeasure').replace(/[^\w가-힣.-]+/g,'_').slice(0,40) || 'geomeasure';
+  const fname=base+'_'+new Date().toISOString().slice(0,10)+'.geojson';
+  const url=URL.createObjectURL(new Blob([JSON.stringify(gj,null,2)],{type:'application/geo+json'}));
+  const a=document.createElement('a');
+  a.href=url; a.download=fname; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+  toast('내보냈습니다: '+fname);
+}
+
+/* ---------- 불러오기 검증 (신뢰 경계) ----------
+   손으로 고친 파일, 다른 버전 파일, 직접 건드린 localStorage 가 모두 여기로
+   들어온다. 조용히 깨지면 현장에서 원인을 못 찾으므로, 버린 항목마다 사유를
+   모아 화면에 남긴다. */
+const isNum = v => typeof v==='number' && isFinite(v);
+const okLng = v => isNum(v) && v>=-180 && v<=180;
+const okLat = v => isNum(v) && v>=-90  && v<=90;
+const coord = c => (Array.isArray(c) && okLng(c[0]) && okLat(c[1])) ? {lat:c[1], lng:c[0]} : null;
+const str   = (v,max) => typeof v==='string' ? v.slice(0,max) : '';
+const clampNum = (v,lo,hi,def) => isNum(v) ? Math.min(hi,Math.max(lo,v)) : def;
+
+function parseGeoJSON(obj){
+  const log=[], out={pts:[], radius:null, areas:[], texts:[], ranch:''};
+  if(!obj || typeof obj!=='object'){ log.push('JSON 객체가 아닙니다'); return {log,out}; }
+  if(obj.type!=='FeatureCollection') log.push("최상위 type 이 'FeatureCollection' 이 아닙니다 ("+String(obj.type)+') — 그래도 features 를 읽어봅니다');
+  if(!Array.isArray(obj.features)){ log.push('features 배열이 없습니다 — 불러오기 중단'); return {log,out}; }
+  out.ranch=str(obj.name || (obj.properties && obj.properties.ranch), 60);
+
+  obj.features.forEach((f,i)=>{
+    const at='['+i+'] ';
+    if(!f || typeof f!=='object' || !f.geometry || typeof f.geometry!=='object'){
+      log.push(at+'geometry 없음 — 건너뜀'); return;
+    }
+    const g=f.geometry;
+    const pr=(f.properties && typeof f.properties==='object') ? f.properties : {};
+    const kind=str(pr.kind,20);
+
+    if(g.type==='Point'){
+      const c=coord(g.coordinates);
+      if(!c){ log.push(at+'Point 좌표 형식/범위 오류 — 건너뜀'); return; }
+      if(kind==='text'){
+        out.texts.push({pos:c, text:str(pr.text,200)||'텍스트', fontSize:clampNum(pr.fontSize,8,48,14)});
+      }else{
+        // kind 가 비어도 Point 는 GW 지점으로 받는다(외부에서 만든 파일 수용)
+        // 이름은 사용자 데이터라 반드시 살린다. label·color 는 순서에서 다시 만든다.
+        out.pts.push({lat:c.lat, lng:c.lng, name:str(pr.name,40)});
+        const r=clampNum(pr.radius,1,100000,null);
+        if(r!==null){
+          if(out.radius===null) out.radius=r;
+          else if(r!==out.radius) log.push(at+'반경 '+r+' m 가 앞 지점과 달라 '+out.radius+' m 로 통일했습니다');
+        }
+      }
+    }else if(g.type==='Polygon'){
+      const ring=(Array.isArray(g.coordinates) && Array.isArray(g.coordinates[0])) ? g.coordinates[0] : null;
+      if(!ring){ log.push(at+'Polygon 링이 없습니다 — 건너뜀'); return; }
+      const path=ring.map(coord).filter(Boolean);
+      const dropped=ring.length-path.length;
+      // 닫힘점은 화면용 경로에서 뺀다(구글 Polygon 도 마지막 점을 자동으로 잇는다)
+      if(path.length>1 && path[0].lat===path[path.length-1].lat && path[0].lng===path[path.length-1].lng) path.pop();
+      if(dropped) log.push(at+'좌표 '+dropped+'개가 범위를 벗어나 제외됐습니다');
+      if(path.length<3){ log.push(at+'꼭짓점이 3개 미만 — 건너뜀'); return; }
+      out.areas.push({path,
+        name:str(pr.name,60)||'영역',
+        desc:str(pr.desc,300),
+        style:{fillColor:safeColor(pr.fillColor,DEF_FILL),
+               strokeColor:safeColor(pr.strokeColor,DEF_STROKE),
+               opacity:clampNum(pr.opacity,0,1,.3)},
+        labelPos:coord(pr.labelPos)});
+    }else if(g.type==='LineString'){
+      // 경로는 GW 지점에서 다시 그린다 — 파생값이라 신뢰하지 않는다
+    }else{
+      log.push(at+"지원하지 않는 geometry '"+String(g.type)+"' — 건너뜀");
+    }
+  });
+  return {log,out};
+}
+function applyParsed(out){
+  clearAreas(true); clearTexts(true); clearPts();
+  if(out.ranch) document.getElementById('ranchInput').value=out.ranch;
+  if(out.radius!==null) document.getElementById('radiusInput').value=out.radius;
+  out.pts.forEach(p=>addPt(p.lat,p.lng,p.name));
+  out.areas.forEach(a=>addArea(a));
+  out.texts.forEach(t=>addText(t.pos,t));
+  applyRadius();
+  // 불러온 내용이 화면 밖이면 아무것도 안 보여 실패로 오해한다 — 전체를 담아준다
+  fitAll(true);
+  setMode('view');
+}
+/* 측위에 성공하면 지도가 현재 위치로 간다 — 복원된 작업이 멀리 있으면 화면
+   밖으로 밀린다. 되돌아갈 방법을 버튼으로 남긴다. */
+function fitAll(silent){
+  const all=[].concat(pts, texts.map(t=>t.pos), ...areas.map(a=>a.path));
+  if(!all.length){ if(!silent) toast('표시할 지점·영역·텍스트가 없습니다'); return; }
+  const b=new google.maps.LatLngBounds();
+  all.forEach(p=>b.extend(LL(p)));
+  map.fitBounds(b);
+}
+function showImportLog(log){
+  const el=document.getElementById('importLog');
+  el.innerHTML = log.length
+    ? '<b>불러오기 알림 '+log.length+'건</b><br>'+log.map(esc).join('<br>')
+    : '';
+}
+function importGeoJSONText(txt){
+  let obj;
+  try{ obj=JSON.parse(txt); }
+  catch(e){ showImportLog(['JSON 파싱 실패: '+e.message]); toast('불러오기 실패 — JSON 형식이 아닙니다'); return; }
+  const {log,out}=parseGeoJSON(obj);
+  const n=out.pts.length+out.areas.length+out.texts.length;
+  if(!n){ showImportLog(log.concat(['읽을 수 있는 항목이 없습니다'])); toast('불러올 항목이 없습니다'); return; }
+  applyParsed(out);
+  showImportLog(log);
+  toast('불러왔습니다 — 지점 '+out.pts.length+' · 영역 '+out.areas.length+' · 텍스트 '+out.texts.length
+        +(log.length?' (알림 '+log.length+'건)':''));
+}
+function readFile(file){
+  if(!file) return;
+  if(file.size>8*1024*1024){ toast('파일이 너무 큽니다 (8MB 초과)'); return; }
+  const fr=new FileReader();
+  fr.onload=()=>importGeoJSONText(String(fr.result));
+  fr.onerror=()=>toast('파일을 읽지 못했습니다');
+  fr.readAsText(file);
+}
+function onFilePick(input){
+  readFile(input.files && input.files[0]);
+  input.value='';   // 같은 파일을 다시 골라도 change 가 걸리도록
+}
+function clearAll(){
+  if(!confirm('지점·영역·텍스트를 모두 지웁니다. 계속할까요?')) return;
+  clearAreas(true); clearTexts(true); clearPts();
+  toast('전체 초기화했습니다');
+  document.getElementById('importLog').innerHTML='';
+  saveLocal();
+}
+
+/* ---------- 자동저장 ----------
+   새로고침·실수로 탭을 닫아도 작업이 날아가지 않게 하는 보조수단.
+   내보내기와 같은 GeoJSON 을 쓰므로 포맷이 갈리지 않는다.
+   ⚠️ 저장 키는 GeoMeasure K 와 반드시 달라야 한다. 같은 호스트에 두 판을 올리면
+   localStorage 를 공유하므로, 키가 같으면 한쪽 작업이 다른 쪽을 덮어쓴다.
+   두 판 사이의 데이터 이동은 GeoJSON 내보내기/불러오기가 담당한다. */
+const LS_KEY='geomeasure.g.v1';
+let saveTimer=null;
+function saveLocal(){
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(()=>{
+    try{ localStorage.setItem(LS_KEY, JSON.stringify(buildGeoJSON())); }
+    catch(e){ /* 용량 초과·프라이빗 모드. 보조수단이라 조용히 넘어간다 */ }
+  },600);
+}
+function loadLocal(){
+  let raw;
+  try{ raw=localStorage.getItem(LS_KEY); }catch(e){ return; }
+  if(!raw) return;
+  let obj;
+  try{ obj=JSON.parse(raw); }catch(e){ return; }
+  // localStorage 도 사용자가 직접 고칠 수 있다 — 파일과 같은 검증을 태운다
+  const {out}=parseGeoJSON(obj);
+  if(!(out.pts.length || out.areas.length || out.texts.length)) return;
+  applyParsed(out);
+  // 화면이 작업 위치에 머무는 게 의도라는 걸 알려주고, 내 위치로 가는 길도 같이 준다
+  toast('이전 작업을 복원했습니다 — 내 위치로 가려면 “위치 갱신”');
+}
+
+/* ---------- 시작 ----------
+   구글 SDK 는 키를 URL 에 담아야 해서 스크립트 태그를 코드에서 만든다.
+   운영에서는 아래 GMAPS_KEY 에 키를 넣고 Cloud Console 의 HTTP 리퍼러 제한으로
+   보호한다(구글 JS 키도 카카오와 마찬가지로 클라이언트 노출형이다).
+   ?key=... 로 임시 확인도 되게 열어 둔다 — 원본 GeoMeasure 가 쓰던 방식이고,
+   키를 아직 못 받은 상태에서 남이 받은 키로 확인할 때 파일을 안 고쳐도 된다. */
+const GMAPS_KEY_PLACEHOLDER='YOUR_GOOGLE_MAPS_API_KEY';
+/* 이 키는 클라이언트 노출형이라 소스에 그대로 두는 것이 정상 사용법이다.
+   보호 수단은 Cloud Console 의 HTTP 리퍼러 제한 + API 제한 + 할당량 상한
+   세 가지이며, 셋 다 걸려 있지 않으면 노출된 키가 곧 과금이 된다
+   (카카오는 한도 초과 시 차단이지만 구글은 과금이다 — CLAUDE.md §4). */
+const GMAPS_KEY='AIzaSyAytesUjgR7x_Pem7G5mEevL440B07_Gn8';
+
+function showMapError(why){
+  document.getElementById('mapErrOrigin').textContent=location.origin;
+  if(why) document.getElementById('mapErrWhy').textContent=why;
+  document.getElementById('mapErr').style.display='flex';
+}
+/* 구글은 키 인증에 실패하면 콘솔에만 사유를 찍고 지도는 회색으로 둔다. 폰에서
+   F12 를 못 여는 현장을 위해 사유를 화면으로 끌어올린다(원본 GeoMeasure 의 방식). */
+window.gm_authFailure=function(){
+  showMapError('인증 실패(gm_authFailure) — 키·리퍼러 제한·결제 계정 중 하나입니다.');
+};
+const _cerr=console.error.bind(console);
+console.error=function(...args){
+  _cerr(...args);
+  const msg=args.map(a=>String(a)).join(' ');
+  if(!/google|maps|api/i.test(msg)) return;
+  let hint='';
+  if(/BillingNotEnabled/i.test(msg))      hint='→ 결제(Billing) 계정이 프로젝트에 연결되지 않음';
+  else if(/RefererNotAllowed/i.test(msg)) hint='→ 키의 HTTP 리퍼러 제한에 현재 주소가 없음';
+  else if(/ApiNotActivated/i.test(msg))   hint='→ Maps JavaScript API 미활성화';
+  else if(/InvalidKey/i.test(msg))        hint='→ 키 문자열 오류';
+  else if(/OverQuota|QuotaExceeded/i.test(msg)) hint='→ 할당량 초과 (일 상한을 걸어둔 경우 정상 동작)';
+  if(hint) showMapError(msg+'\n'+hint);
+};
+
+function loadGoogleMaps(){
+  const key=new URLSearchParams(location.search).get('key') || GMAPS_KEY;
+  if(!key || key===GMAPS_KEY_PLACEHOLDER){
+    showMapError('API 키가 설정되지 않았습니다. index.html 의 GMAPS_KEY 에 '
+      +'JavaScript API 키를 넣거나, 주소 끝에 ?key=발급키 를 붙여 임시로 확인하세요.');
+    return;
+  }
+  const s=document.createElement('script');
+  // drawing = 영역(다각형) 그리기. geometry 는 쓰지 않는다(거리는 자체 haversine).
+  s.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(key)
+       +'&libraries=drawing&language=ko&region=KR&loading=async&callback=initMap';
+  s.async=true;
+  s.onerror=()=>showMapError('지도 스크립트를 불러오지 못했습니다 (네트워크 또는 차단).');
+  document.head.appendChild(s);
+}
+loadGoogleMaps();
+
+function initMap(){
+  defineOverlayClass();   // google.maps 가 준비된 뒤에야 OverlayView 를 상속할 수 있다
+  map=new google.maps.Map(document.getElementById('map'),{
+    // 위치권한을 못 받았을 때의 자리. 측위에 성공하면 곧바로 현재 위치로 옮겨간다.
+    center:LL(DEFAULT_CENTER),
+    zoom:ZOOM_START,
+    mapTypeId:'satellite',        // 기본 = 위성
+    disableDefaultUI:true, zoomControl:true,
+    gestureHandling:'greedy',     // 한 손가락 드래그로 지도가 움직이게(현장에서 중요)
+    tilt:0, clickableIcons:false  // POI 아이콘 클릭이 지점 추가를 가로채지 않게
+  });
+  setMapType('satellite');
+
+  // 영역 모드에서는 드로잉 매니저가 클릭을 가져가 이 핸들러가 아예 안 불린다.
+  // 텍스트 놓기는 일회성이라 모드보다 먼저 본다.
+  map.addListener('click', e=>{
+    // 마커 클릭이 지도 클릭으로 번지더라도 측정 모드에서 지점이 하나 더 찍히지
+    // 않도록, 직후의 지도 클릭 한 번은 흘린다.
+    if(Date.now()-markerClickAt < 300) return;
+    const p=toPt(e.latLng);
+    if(pendingText){
+      pendingText=false;
+      addText(p);
+      document.getElementById('modeHint').textContent=MODE_HINT[mode];
+      toast('텍스트 추가됨 — 패널에서 내용을 입력하세요');
+      return;
+    }
+    if(!measuringNow()) return;
+    addPt(p.lat, p.lng); updateRubber(p);
+  });
+  map.addListener('mousemove', e=>{ if(measuringNow()) updateRubber(toPt(e.latLng)); });
+  map.addListener('rightclick', finishMeasure);   // 우클릭/길게누르기 = 지정 종료
+  // 카카오에는 없어 DOM 으로 잡아야 했지만 구글은 지도 이벤트로 있다.
+  map.addListener('mouseout', hideRubber);
+  // 줌이 바뀌면 라벨 겹침 여부가 달라진다
+  map.addListener('zoom_changed', applyLabelVisibility);
+
+  initDrawing();
+  initDropZone();
+  setMode('measure');
+
+  geocoder=new google.maps.Geocoder();
+  document.getElementById('searchInput').addEventListener('keydown', e=>{
+    if(e.key==='Enter'){ e.target.blur(); doSearch(); }
+  });
+
+  // 패널을 접거나 펼치면 지도 컨테이너 크기가 바뀐다. 구글은 대개 스스로
+  // 맞추지만, 전환 애니메이션이 끝난 시점에 한 번 알려주는 편이 확실하다.
+  document.getElementById('panel').addEventListener('transitionend',
+    ()=>google.maps.event.trigger(map,'resize'));
+
+  // 키·리퍼러가 어긋나면 스크립트는 붙어도 타일이 안 온다(회색 화면).
+  // 일정 시간 안에 타일이 한 번도 안 그려지면 같은 안내를 띄운다.
+  let tilesOk=false;
+  map.addListener('tilesloaded', ()=>{ tilesOk=true; });
+  setTimeout(()=>{ if(!tilesOk) showMapError('타일이 오지 않습니다 — 키 제한·할당량을 확인하세요.'); }, 5000);
+
+  /* 화면 위치 우선순위: 복원된 작업 > 현재 위치 > 기본 중심.
+     작업이 있으면 측위가 화면을 뺏지 않는다 — PC 측위는 IP 기반이라 ±20 km 씩
+     틀리는데, 그걸로 작업 중이던 목장 화면을 밀어내면 손해가 명백하다.
+     측위 자체는 항상 시도한다. 현재위치 마커와 '현재위치 → 마지막 지점' 거리에
+     쓰이기 때문이고, 화면을 옮길지만 centerOnFix 로 가른다. */
+  loadLocal();
+  const restored = pts.length || areas.length || texts.length;
+  locateMe();                        // centerOnFix=true 로 세팅됨
+  if(restored) centerOnFix=false;    // 복원본이 있으면 그 화면을 지킨다
+}
+
+/* GeoJSON 을 지도에 끌어다 놓아 불러온다. 파일선택 창을 거치지 않는 쪽이
+   현장에서 빠르다. */
+function initDropZone(){
+  const wrap=document.getElementById('mapWrap');
+  const hint=document.getElementById('dropHint');
+  const show=on=>hint.classList.toggle('on',on);
+  wrap.addEventListener('dragover', e=>{ e.preventDefault(); show(true); });
+  wrap.addEventListener('dragleave', e=>{ if(e.target===wrap||e.target===hint) show(false); });
+  wrap.addEventListener('drop', e=>{
+    e.preventDefault(); show(false);
+    readFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+  });
+}
+
+/* ---------- 현재 위치 ---------- */
+let centerOnFix=false, lowAccTried=false;
+
+/* 측위 실패는 갈래가 여러 개다(브라우저 권한 · OS 위치서비스 · 타임아웃).
+   토스트는 2초 만에 사라져 현장에서 원인을 못 잡으므로 카드에 남긴다. */
+function setGpsStatus(msg, isErr){
+  const el=document.getElementById('gpsAcc');
+  el.textContent=msg;
+  el.style.color=isErr?'var(--danger)':'';
+}
+
+/* 오차 반경을 감싸는 사각형. 위도 1도 ≈ 111.32 km 로 잡고 경도는 위도로 보정한다.
+   ponytail: 구면 정확도가 필요한 계산이 아니라 화면 배율을 정하려는 것이라
+   평면 근사로 끝낸다. 극지방에서 cos 이 0 에 수렴하는 것만 막아둔다. */
+function accBox(lat,lng,acc){
+  const dLat=acc/111320;
+  const dLng=acc/(111320*Math.max(0.01, Math.cos(lat*Math.PI/180)));
+  return {sw:{lat:lat-dLat, lng:lng-dLng}, ne:{lat:lat+dLat, lng:lng+dLng}};
+}
+
+/* 측위 결과로 지도를 옮길 때는 배율을 오차에 맞춘다.
+   ±20 km 짜리 IP 측위를 건물 단위로 확대해 보여주면 틀린 값이 정확한 값처럼
+   보인다 — 화면이 거짓말을 하게 된다. 오차 반경이 화면에 꽉 차게 잡으면
+   사용자가 "이만큼 불확실하다"를 배율만 보고도 안다.
+   Ponytail §2.3: 센서는 틀어진다. ± 를 숫자로 띄우는 데서 끝내지 않는다.
+   구글 fitBounds 는 줌이 곧바로 반영되지 않아 직후의 getZoom() 이 옛값을 준다 —
+   과확대 방지는 idle 이 온 뒤에 건다(K 의 setBounds 와 다른 점). */
+function focusOnGps(acc){
+  if(!gps) return;
+  const box=accBox(gps.lat, gps.lng, Math.max(acc||0, 10));
+  const b=new google.maps.LatLngBounds();
+  b.extend(LL(box.sw)); b.extend(LL(box.ne));
+  map.fitBounds(b);
+  google.maps.event.addListenerOnce(map,'idle',()=>{
+    if(map.getZoom()>ZOOM_CLOSEUP) map.setZoom(ZOOM_CLOSEUP);   // 오차가 아주 작아도 과확대는 하지 않는다
+  });
+}
+function locateMe(){
+  if(!navigator.geolocation){ setGpsStatus('이 브라우저는 위치 기능을 지원하지 않습니다', true); return; }
+  if(gps) focusOnGps(gps.acc);   // 즉시 이동 (마지막 확인 위치 + 그때의 오차 배율)
+  centerOnFix=true; // 새 측위 완료 시 한 번 더 정확한 위치로 이동
+  lowAccTried=false;
+  setGpsStatus('측위 중…');
+  // 1차는 고정밀. 휴대폰에서는 이게 GPS 를 깨워 수 m 까지 잡는다.
+  navigator.geolocation.getCurrentPosition(onPos, onPosErr,
+    {enableHighAccuracy:true, timeout:10000, maximumAge:0});
+}
+function toggleTrack(){
+  const btn=document.getElementById('trackBtn');
+  if(watchId!==null){
+    navigator.geolocation.clearWatch(watchId); watchId=null;
+    btn.textContent='실시간 추적 OFF';
+    btn.classList.remove('on');
+  }else{
+    watchId=navigator.geolocation.watchPosition(onPos, onPosErr,
+      {enableHighAccuracy:true, maximumAge:1000});
+    btn.textContent='실시간 추적 ON';
+    btn.classList.add('on');
+    toast('실시간 추적 시작');
+  }
+}
+function onPos(p){
+  // 측위 정확도(accuracy)는 기기·환경에 따라 수십 m 씩 흔들린다. 좌표만 믿고
+  // 보면 오판하므로 오차 반경을 숫자·원·배율 세 곳에 모두 반영한다.
+  const acc=p.coords.accuracy;
+  gps={lat:p.coords.latitude, lng:p.coords.longitude, acc:acc};
+  document.getElementById('gpsCoord').innerHTML=
+    `위도 <b>${fmt(gps.lat)}</b><br>경도 <b>${fmt(gps.lng)}</b>`;
+  /* 숫자만 보면 오판한다. 데스크톱에는 GPS 칩이 없어 Wi-Fi AP 스캔 → 없으면
+     IP(=ISP 국사 위치)로 떨어지고, 후자는 수십 km 씩 틀린다. 단계별로 다르게 말한다. */
+  setGpsStatus(accMessage(acc), acc>1000);
+  if(!gpsMarker){
+    gpsMarker=new google.maps.Marker({position:LL(gps), map, title:'현재 위치', clickable:false,
+      icon:{path:google.maps.SymbolPath.CIRCLE, scale:8, fillColor:'#38b6ff',
+            fillOpacity:1, strokeColor:'#fff', strokeWeight:2}});
+    gpsCircle=new google.maps.Circle({center:LL(gps), radius:acc, map, clickable:false,
+      fillColor:'#38b6ff', fillOpacity:.12, strokeColor:'#38b6ff', strokeOpacity:.4, strokeWeight:1});
+    // 첫 측위라고 무조건 화면을 옮기지 않는다. 이동 여부는 아래 centerOnFix 한
+    // 곳에서만 정한다 — 실시간 추적 중에 지도가 제멋대로 튀는 것도 같이 막힌다.
+  }else{
+    gpsMarker.setPosition(LL(gps));
+    gpsCircle.setCenter(LL(gps)); gpsCircle.setRadius(acc);   // 구글 Circle 은 setPosition 이 아니라 setCenter
+  }
+  if(centerOnFix){ focusOnGps(acc); centerOnFix=false; }
+  updateDist();
+}
+/* 오차 구간마다 원인과 조치가 다르다. "정확도 ±20000 m" 만 띄우면 그게 정상인지
+   고장인지 알 수 없어, 틀린 위치를 그대로 믿고 커버리지를 잡게 된다. */
+function accMessage(acc){
+  const s='정확도 ±'+(acc>=1000 ? (acc/1000).toFixed(1)+' km' : acc.toFixed(1)+' m');
+  if(acc>1000) return s+' · IP 기반 추정입니다. 위치가 수십 km 틀릴 수 있으니 믿지 마세요. '
+    +'Wi-Fi 어댑터를 켜거나(연결 불필요) 현장에서는 휴대폰으로 여세요.';
+  if(acc>100)  return s+' · Wi-Fi 추정으로 보입니다. 커버리지 측정은 현장에서 휴대폰 GPS 로 하세요.';
+  return s;
+}
+
+/* 코드별 조치가 완전히 다르다. "실패했습니다"만 띄우면 어디를 손봐야 할지
+   알 수 없어 권한만 계속 다시 누르게 된다. */
+const GEO_ERR={
+  1:'브라우저가 위치 권한을 거부했습니다. 주소창 왼쪽 자물쇠 → 위치 → 허용 후 새로고침하세요.',
+  2:'OS가 위치를 못 알려줍니다. 윈도우 설정 → 개인정보 및 보안 → 위치에서 '
+    +'‘위치 서비스’와 ‘데스크톱 앱이 위치에 액세스하도록 허용’을 켜세요.',
+  3:'시간이 초과됐습니다. 실내·유선랜 PC 는 측위가 오래 걸리거나 실패합니다.'
+};
+function onPosErr(e){
+  /* code 1 은 "사용자가 거부"와 "Permissions-Policy 로 문서 전체 차단"을 구분하지
+     않는다. 조치할 곳이 브라우저(권한)와 웹서버(응답 헤더)로 정반대여서, 헤더
+     때문인데 권한 화면만 계속 확인하는 헛수고가 실제로 벌어졌다.
+     크롬은 이 경우 message 에 permissions policy 를 담아 주므로 그걸로 가른다. */
+  if(e.code===1 && /permissions?\s*policy|disabled in this document/i.test(e.message||'')){
+    setGpsStatus('웹서버가 위치 기능을 차단했습니다 (Permissions-Policy). '
+      +'브라우저 권한이 아니라 웹서버 설정 문제입니다 — geolocation=(self) 로 허용해야 합니다.', true);
+    toast('서버 설정이 위치를 차단했습니다');
+    console.warn('geolocation blocked by Permissions-Policy', e.message);
+    return;
+  }
+  // PC 에는 GPS 칩이 없어 고정밀 요청이 그대로 실패하는 일이 흔하다. Wi-Fi/IP
+  // 기반 저정밀로 한 번 더 물어본다 — 권한이 정상인데 안 잡히는 대부분이 여기서 붙는다.
+  if(!lowAccTried && (e.code===2 || e.code===3)){
+    lowAccTried=true;
+    setGpsStatus('정밀 측위 실패 — 저정밀로 재시도 중…');
+    navigator.geolocation.getCurrentPosition(onPos, onPosErr,
+      // maximumAge 는 0 이어야 한다. 캐시를 허용하면 사용자가 '위치 갱신'을 눌러도
+      // 5분간 같은 값이 돌아와, 틀린 위치가 고정된 것처럼 보인다.
+      {enableHighAccuracy:false, timeout:20000, maximumAge:0});
+    return;
+  }
+  const why=GEO_ERR[e.code] || ('알 수 없는 오류'+(e.message ? (' — '+e.message) : ''));
+  setGpsStatus('측위 실패(코드 '+e.code+') — '+why, true);
+  toast('위치 확인 실패 — 패널의 사유를 확인하세요');
+  console.warn('geolocation error', e.code, e.message);
+}
+
+/* ---------- 지점 선택 ---------- */
+/* 이름은 pts 원소에 얹는다 — 배열을 늘리지 않으므로 delPt() 의 splice 가
+   이름을 같이 옮겨 준다. A·B·C 글자와 색은 계속 인덱스에서 파생돼(순서 표시)
+   재정렬 로직을 건드릴 필요가 없다. 이름은 '무엇인지', 글자는 '몇 번째인지'다. */
+const nameOf  = i => (pts[i] && pts[i].name) || letterOf(i);
+const titleOf = i => nameOf(i)+' · '+fmt(pts[i].lat)+', '+fmt(pts[i].lng);
+// 구간 표는 폭이 좁다 — 긴 이름이 들어오면 줄을 깨뜨리므로 잘라 쓴다
+const shortName = i => { const s=nameOf(i); return s.length>10 ? s.slice(0,9)+'…' : s; };
+function syncMarkerTitles(){
+  markers.forEach((m,i)=>{ if(m.setTitle) m.setTitle(titleOf(i)); });
+}
+
+function addPt(lat,lng,name){
+  const idx=pts.length;
+  pts.push({lat,lng,name:name||''});
+  const m=new google.maps.Marker({position:{lat,lng}, map, draggable:true,
+    icon:markerIcon(colorOf(idx)), label:markerLabel(letterOf(idx)),
+    title:titleOf(idx)});   // 네이티브 툴팁 — 별도 팝업이 없어 드래그와 충돌하지 않는다
+  // 우클릭은 이미 '지정 종료'와 '다각형 닫기'에 쓰인다 — 일반 클릭을 쓴다(터치에서도 동작)
+  m.addListener('click', ()=>{
+    markerClickAt=Date.now();
+    highlightPt(markers.indexOf(m));
+  });
+  m.addListener('dragend', ()=>{
+    const i=markers.indexOf(m);
+    if(i<0) return;                       // 드래그 도중 삭제된 마커 방어
+    const p=toPt(m.getPosition());
+    pts[i]={lat:p.lat, lng:p.lng, name:pts[i].name};   // 이름은 좌표와 함께 살려둔다
+    circles[i].setCenter(LL(p));
+    renderPts(); drawLine(); updateDist();
+  });
+  markers.push(m);
+  circles.push(makeCircle(lat,lng,idx));
+  renderPts(); drawLine(); updateDist();
+}
+function delPt(i){
+  markers[i].setMap(null);
+  circles[i].setMap(null);
+  pts.splice(i,1); markers.splice(i,1); circles.splice(i,1);
+  // 라벨·색상 재정렬 (A,B,C... 순서에 맞게)
+  markers.forEach((m,j)=>{
+    m.setIcon(markerIcon(colorOf(j)));
+    m.setLabel(markerLabel(letterOf(j)));
+    circles[j].setOptions({fillColor:colorOf(j), strokeColor:colorOf(j)});
+  });
+  hideRubber();
+  renderPts(); drawLine(); updateDist();
+}
+function clearPts(){
+  markers.forEach(m=>m.setMap(null));
+  circles.forEach(c=>c.setMap(null));
+  pts=[]; markers=[]; circles=[];
+  hideRubber();
+  setMode('measure');            // 전체 삭제 시 지정 모드 재개
+  renderPts(); drawLine(); updateDist();
+}
+function renderPts(){
+  // 지점이 바뀌는 경로(addPt·delPt·clearPts·마커 드래그)가 모두 이 함수를 거친다.
+  // 자동저장을 호출부마다 넣는 대신 여기 한 곳에 건다. updateDist() 는 GPS 갱신
+  // 때도 불려서 저장이 헛돈다 — 그래서 이쪽이다.
+  saveLocal();
+  syncMarkerTitles();   // 삭제·드래그로 순서나 좌표가 바뀌면 툴팁도 따라가야 한다
+  const el=document.getElementById('ptList');
+  if(!pts.length){ el.innerHTML='<div class="muted">지도를 탭하면 지점이 추가됩니다.</div>'; return; }
+  el.innerHTML=pts.map((p,i)=>{
+    let seg='';
+    if(i>0) seg='이전 지점에서 '+fmtDist(haversine(pts[i-1],p));
+    return `<div class="pt" id="pt-${i}">
+      <div class="badge" style="background:${colorOf(i)}">${letterOf(i)}</div>
+      <div class="info">
+        <input type="text" class="nm" value="${esc(p.name||'')}" maxlength="40"
+               placeholder="이름 (예: 본관 GW)" oninput="editPt(${i}, this.value)">
+        <div class="ll" onclick="copyText('${fmt(p.lat)}, ${fmt(p.lng)}')">${fmt(p.lat)}, ${fmt(p.lng)}</div>
+        <div class="seg">${seg||'시작 지점 · 드래그로 이동 가능'}</div>
+      </div>
+      <button class="del" onclick="delPt(${i})">✕</button>
+    </div>`;
+  }).join('');
+}
+function drawLine(){
+  if(line) line.setMap(null);
+  segLabels.forEach(l=>l.setMap(null)); segLabels=[];
+  if(pts.length<2){ line=null; return; }
+  line=new google.maps.Polyline({path:pts.map(LL), strokeColor:'#ffc53d', zIndex:Z.route,
+    strokeWeight:3, strokeOpacity:.9, clickable:false, geodesic:true});
+  line.setMap(map);
+  // 각 구간 중앙에 거리 표시
+  for(let i=1;i<pts.length;i++){
+    segLabels.push(makeDistLabel(midOf(pts[i-1],pts[i]), fmtDist(haversine(pts[i-1],pts[i])), '#4cd07d'));
+  }
+}
+
+/* ---------- 거리 집계 ---------- */
+function updateDist(){
+  let total=0, rows='';
+  for(let i=1;i<pts.length;i++){
+    const d=haversine(pts[i-1],pts[i]);
+    total+=d;
+    rows+='<div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;padding:2px 0">'
+        +'<span style="color:var(--dim)">'+esc(shortName(i-1))+' ↔ '+esc(shortName(i))+'</span><span>'+fmtDist(d)+'</span></div>';
+  }
+  // 폐합 구간: 마지막 지점 ↔ A (지점 3개 이상일 때)
+  if(pts.length>=3){
+    const dc=haversine(pts[pts.length-1], pts[0]);
+    rows+='<div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;padding:2px 0;border-top:1px dashed var(--line);margin-top:2px">'
+        +'<span style="color:var(--acc)">'+esc(shortName(pts.length-1))+' ↔ '+esc(shortName(0))+' (폐합)</span><span>'+fmtDist(dc)+'</span></div>'
+        +'<div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;padding:2px 0">'
+        +'<span style="color:var(--acc)">둘레 (폐합 포함)</span><span style="color:var(--acc2)">'+fmtDist(total+dc)+'</span></div>';
+  }
+  document.getElementById('totalDist').textContent=fmtDist(total);
+  document.getElementById('segList').innerHTML=rows;
+  const gd=document.getElementById('gpsDist');
+  gd.textContent=(gps && pts.length) ? fmtDist(haversine(gps, pts[pts.length-1])) : '—';
+}
+
+/* ---------- 지도 타입 ----------
+   구글은 위성·일반·지형이 모두 대등한 기본 지도 타입이다. 카카오처럼 지형만
+   오버레이로 따로 얹을 필요가 없어 K 의 terrainOn 상태 변수가 통째로 사라진다. */
+function setMapType(t){
+  map.setMapTypeId(t);
+  // 어느 타입인지 버튼으로 알 수 있게 표시
+  document.querySelectorAll('#mapTypeRow button').forEach(b=>
+    b.classList.toggle('on', b.dataset.type===t));
+}
+
+/* ---------- UI 유틸 ---------- */
+function togglePanel(){ document.getElementById('panel').classList.toggle('hidden'); }
+function copyText(t){
+  if(!t){ toast('복사할 좌표가 없습니다'); return; }
+  navigator.clipboard?.writeText(t).then(()=>toast('복사됨: '+t)).catch(()=>toast('복사 실패'));
+}
+let toastTimer;
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>el.classList.remove('show'),2200);
+}
+</script>
+</body>
+</html>
