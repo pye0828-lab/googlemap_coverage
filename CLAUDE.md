@@ -263,7 +263,7 @@ K(`pye0828-lab/kakaomap_coverage`)와 **별도 저장소**다. 자동 동기화 
 | 픽셀→좌표 | `map.getProjection().coordsFromContainerPoint()` | `overlay.getProjection().fromContainerPixelToLatLng()` |
 | 지도 mouseout | 이벤트 없음 → DOM `mouseleave` | 지도 이벤트 `mouseout` 있음 |
 | 검색 | `services.Places` → `services.Geocoder` | `Geocoder` 하나 (**상호명 검색이 약함** — Places는 별도 SKU라 미채택) |
-| 영역 그리기 완료 | `drawend` → `getData()`로 되읽기 | `polygoncomplete`가 **Polygon을 그대로 전달** |
+| 영역 그리기 | 카카오 `drawing` 라이브러리 (`drawend` → `getData()`) | **라이브러리 없음 — 지도 클릭으로 자체 구현.** 구글이 3.65에서 `drawing`을 걷어냈다(§5.6) |
 | 영역 닫기 제스처 | 더블클릭 / 우클릭 | **첫 꼭짓점 재클릭** |
 | 지도 실패 감지 | 도메인 미등록 → 타일만 안 옴 | `gm_authFailure` + `console.error` 후킹 + 타일 타임아웃 |
 | 자동저장 키 | `bovicarekormap.v1` | `geomeasure.g.v1` — **반드시 달라야 함**(같은 호스트면 localStorage 공유) |
@@ -281,3 +281,18 @@ K(`pye0828-lab/kakaomap_coverage`)와 **별도 저장소**다. 자동 동기화 
 - **끊겼을 때의 복구 경로**: `initSatPlus()` 안의 `map.mapTypes.set(...)` 과 `setMapType(MAP_TYPE_PLUS)` 두 줄을 지우고 기본값을 `'satellite'` 로 되돌린다. 같은 함수의 `MaxZoomService` 잠금은 공식 API 만 쓰므로 그대로 살아있고, 도구는 확대 한계가 낮아질 뿐 정상 동작한다.
 - `overzoomTile()` 을 DOM 에서 분리해 둔 이유는 하나다 — **눈으로는 맞는지 알 수 없는 계산이라서** `selfcheck.test.js` 로 검증한다. 이 함수를 고치면 반드시 테스트를 다시 돌린다.
 - 이 레이어가 기본값이 되면서 **키가 잘못돼도 타일은 그려진다.** 인증 실패 감지는 `gm_authFailure` 와 `console.error` 후킹이 담당하고, 타일 타임아웃은 보조 수단으로 내려갔다.
+
+### 5.6 G 전용: 영역 그리기 자체 구현 — K 로 옮기지 않는다
+
+`addAreaVertex()` · `paintDraft()` · `clearAreaDraft()` · `closeAreaDraft()` 는 **G 에만 있는 코드다.** K 는 카카오 `drawing` 라이브러리를 그대로 쓰므로 §5.2 절차에서 이 네 함수는 대조 대상이 아니다. **화면에 보이는 조작법은 안 바뀌었다** — 닫기는 여전히 '첫 꼭짓점 재클릭'이고 `MODE_HINT.area` 문구도 그대로다.
+
+**왜 갈아탔나 (2026-08-06)**: 구글이 Maps JS **3.65** 에서 `drawing` 라이브러리를 걷어냈다. 생성자가 지워진 게 아니라 본문이 `if(_.Hl) throw Error("...no longer available...as of version 3.65")` 로 바뀌었고, `_.Hl` 은 API 부트스트랩이 항상 채우므로 **`new DrawingManager()` 는 무조건 예외**다.
+
+여기서 배울 것은 라이브러리가 아니라 **터진 방식**이다:
+
+- 기존 가드는 `google.maps.drawing.DrawingManager` 가 **존재하는지**만 봤다. 존재는 했다 — **부를 때** 터졌다. SDK 방어는 존재 확인이 아니라 `try/catch` 로 한다.
+- 그 예외가 `initMap()` 을 그 줄에서 끊어 **검색·측위·자동복원·드래그앤드롭이 한꺼번에 죽었다.** 사용자에게 보인 증상은 검색 시 "지도 로딩 후 다시 시도하세요" **하나뿐**이었다(`geocoder` 가 null 이라서). 그래서 `initMap()` 의 조각들은 `step(이름, 함수)` 로 감싸 **한 곳의 실패를 격리**한다 — 새 초기화 코드를 넣을 때도 이 규칙을 따른다.
+- `step()` 안에서는 **`console.error` 가 아니라 `console.warn`** 을 쓴다. `error` 는 위쪽 후킹이 잡아 지도 인증 실패 화면을 띄우고, 원인이 엉뚱하게 보고된다.
+- **`loadLocal()` 이 안 돌았는데 `saveLocal()` 은 돌아서 저장된 작업이 빈 상태로 덮어써졌다.** 그래서 `localLoaded` 잠금을 뒀다(§2.3 데이터 유실). `saveLocal` 은 호출부가 16곳이라 **쓰는 쪽 한 곳에서** 막는다.
+
+**진단 기록** — 이 판정은 브라우저 없이 났다. `curl` 로 `maps/api/js` 번들을 받아 `DrawingManager` 문자열을 찾으면 throw 문이 그대로 보인다. 반대로 `AuthenticationService`·`GeocodeService` 를 직접 부르는 건 §3.3 경고대로 소용없다. `v=3.64` / `v=quarterly` 는 아직 예전 번들을 준다 — **버전 고정은 시간을 살 뿐이라 채택하지 않았다.**

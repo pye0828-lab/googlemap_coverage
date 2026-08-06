@@ -383,5 +383,66 @@ t('오버줌: 날짜변경선을 넘어도 x 가 감긴다', ()=>{
   assert.strictEqual(ctx.overzoomTile(n+5, 210484, 19, 19).x, 5);
 });
 
+// ---- 10. 자동저장: 복원 전에는 쓰지 않는다 ----
+/* 2026-08-06 사고 재발 방지. initMap 이 중간에 끊겨 loadLocal() 이 안 돌았는데
+   saveLocal() 은 그대로 돌아, 빈 상태가 저장된 작업을 덮어썼다. 화면으로는
+   "검색이 안 된다"로만 보여서 데이터가 지워지는 걸 아무도 못 봤다.
+   saveLocal 은 호출부가 16곳이라 잠금이 풀리면 조용히 다시 유실된다. */
+t('자동저장: loadLocal 전에는 저장을 걸지 않는다', ()=>{
+  run('saveTimer=null; localLoaded=false; saveLocal();');
+  assert.strictEqual(run('saveTimer'), null, '복원 전에 저장 타이머가 걸렸다');
+});
+t('자동저장: loadLocal 뒤에는 저장이 걸린다', ()=>{
+  // 저장된 게 없어도(getItem→null) 새 작업은 저장돼야 한다 — 기준은 "시도했다"
+  run('saveTimer=null; localLoaded=false; loadLocal(); saveLocal();');
+  assert.ok(run('saveTimer')!==null, '복원 뒤에도 저장이 안 걸린다');
+  run('clearTimeout(saveTimer); saveTimer=null;');   // 테스트가 600 ms 매달리지 않게
+});
+
+// ---- 11. 영역 그리기 자체 구현 (구글 drawing 라이브러리 제거분) ----
+/* 구글이 3.65 에서 DrawingManager 를 throw 로 바꿔 직접 구현으로 갈아탔다.
+   손으로 쓴 상태기계(areaDraft/draftPoly/draftFirst)라 조용히 틀릴 수 있는 곳이
+   생겼다 — 지도 렌더가 아니라 "꼭짓점이 어떻게 쌓이고 언제 영역이 되는가"만 본다. */
+class FakeMapObj{                       // Marker·Polygon 자리를 채우는 최소 스텁
+  constructor(o){ this.o=o||{}; this.path=(this.o.paths||[]).slice(); }
+  setMap(){} setPath(p){ this.path=p.slice(); } addListener(ev,fn){ this[ev]=fn; }
+}
+ctx.google={maps:{Marker:FakeMapObj, Polygon:FakeMapObj}};
+// addArea 는 오버레이·라벨까지 끌고 들어가므로 결과만 가로챈다
+run('var captured=null; addArea=o=>{ captured=o; };');
+const draft = expr => run('clearAreaDraft(); captured=null; '+expr);
+
+t('영역: 꼭짓점 3개 미만이면 영역이 되지 않는다', ()=>{
+  draft('addAreaVertex({lat:33.40,lng:126.36}); addAreaVertex({lat:33.40,lng:126.37}); closeAreaDraft();');
+  assert.strictEqual(run('captured'), null, '2개짜리가 영역으로 들어갔다');
+  // 취소하지 않고 그리던 상태를 유지해야 한다(첫 점을 두 번 누른 실수 대비)
+  assert.strictEqual(run('areaDraft.length'), 2, '실패했다고 그리던 꼭짓점을 버렸다');
+});
+t('영역: 첫 꼭짓점 재클릭으로 닫으면 3개가 그대로 넘어간다', ()=>{
+  draft('addAreaVertex({lat:33.40,lng:126.36}); addAreaVertex({lat:33.40,lng:126.37});'
+       +'addAreaVertex({lat:33.41,lng:126.37}); closeAreaDraft();');
+  assert.strictEqual(run('captured.path.length'), 3);
+  eqPt(run('captured.path[0]'), 33.40, 126.36);
+  assert.ok(ctx.polyArea(run('captured.path'))>0, '면적이 0이면 좌표가 뒤바뀐 것');
+});
+t('영역: 닫고 나면 다음 영역이 이어 붙지 않는다', ()=>{
+  // clearAreaDraft 를 addArea 앞으로 옮기면 path 가 빈 채로 넘어간다 — 순서가 곧 버그다
+  draft('addAreaVertex({lat:33.40,lng:126.36}); addAreaVertex({lat:33.40,lng:126.37});'
+       +'addAreaVertex({lat:33.41,lng:126.37}); closeAreaDraft();');
+  assert.strictEqual(run('areaDraft.length'), 0);
+  assert.strictEqual(run('draftFirst'), null, '첫 꼭짓점 마커가 남아 다음 영역을 오염시킨다');
+});
+t('영역: 첫 꼭짓점 마커는 하나만 생긴다(닫기 대상이 흔들리지 않게)', ()=>{
+  draft('addAreaVertex({lat:33.40,lng:126.36});');
+  const first=run('draftFirst');
+  run('addAreaVertex({lat:33.41,lng:126.37});');
+  assert.strictEqual(run('draftFirst'), first);
+});
+t('영역: 범위 밖 좌표는 normPath 가 걸러 영역이 되지 않는다', ()=>{
+  draft('addAreaVertex({lat:999,lng:999}); addAreaVertex({lat:33.40,lng:126.37});'
+       +'addAreaVertex({lat:33.41,lng:126.37}); closeAreaDraft();');
+  assert.strictEqual(run('captured'), null);
+});
+
 console.log('\n'+(fail?('실패 '+fail+'건 / '):'')+'통과 '+pass+'건');
 process.exit(fail?1:0);
