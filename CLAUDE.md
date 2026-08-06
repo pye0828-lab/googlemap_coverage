@@ -208,6 +208,42 @@ curl -sI https://yepark.co.kr/                     | grep -i permissions-policy 
 
 > **키 인증은 이 절차로 검증되지 않는다.** 리퍼러·결제·API 활성화는 브라우저에서만 판정된다. `AuthenticationService`를 `curl`로 직접 부르면 리퍼러와 무관하게 `NotLoadingAPIFromGoogleMapsError`가 돌아와 **정상과 실패를 구분하지 못한다** — 실지도 확인을 대체하려 들지 말 것.
 
+### 3.4 개발용 사본(`-dev`)과 릴리즈 절차
+
+`/bovicare-gmapgoogle/`은 **돌아가는 서비스**다. 기능을 손볼 때 라이브를 직접 고치지 않는다 — 이 도구는 실지도·실기 GPS로만 검증되므로(§2.4, README «검증 상태») **확인하는 동안 깨진 화면이 그대로 서비스된다.** git worktree 사본에서 작업하고, 확인이 끝난 것만 옮긴다. K도 같은 구조다(`/bovicare-gmapkakao-dev/`).
+
+| | 경로 | URL | 브랜치 |
+|---|---|---|---|
+| 릴리즈 | `/var/www/html/webpage-googlemap-coverage/` | `/bovicare-gmapgoogle/` | `main` |
+| 개발 | `/var/www/html/webpage-googlemap-coverage-dev/` | `/bovicare-gmapgoogle-dev/` | `dev` |
+
+```bash
+git worktree add /var/www/html/webpage-googlemap-coverage-dev -b dev   # 최초 1회 (완료됨)
+```
+
+nginx는 **세 곳이 짝**이다 — `location /bovicare-gmapgoogle-dev/`(alias), 내부 폴더명 차단 regex의 `webpage-googlemap-coverage-dev`, 그리고 `security.conf`의 위치 권한 map. 사본을 없앨 때는 `git worktree remove`로 지운다(디렉터리만 지우면 등록이 남는다).
+
+**릴리즈 — 두 폴더가 같은 저장소의 worktree라 원격을 거치지 않고 바로 보인다.**
+
+```bash
+cd /var/www/html/webpage-googlemap-coverage-dev
+node selfcheck.test.js                    # 용춘목장 기준값이 1차 관문 (§2.4)
+git add -A && git commit -m "..." && git push -u origin dev
+
+cd /var/www/html/webpage-googlemap-coverage
+git merge --ff-only dev                   # 파일이 바뀌는 순간 = 릴리즈 (빌드 없음)
+git push origin main
+```
+
+`--ff-only`인 이유: **라이브에서 직접 커밋하지 않는다는 규율을 강제한다.** 여기서 실패하면 누군가 라이브를 직접 고친 것이므로, 그 커밋을 dev로 가져가 정리한 뒤 다시 올린다. 옮긴 뒤 §3.3을 다시 돌린다(파일이 그대로 서빙되므로 reload는 필요 없다).
+
+**G 고유 주의점 두 가지 — K에는 없다.**
+
+- **HTTP 리퍼러 제한에 dev 경로가 걸린다.** 카카오는 도메인을 **origin 단위**로 등록해 경로가 달라도 지도가 뜨지만, 구글 키 제한은 **경로까지 좁힐 수 있다.** `https://yepark.co.kr/bovicare-gmapgoogle/*`처럼 등록해 뒀다면 dev 경로에서 `RefererNotAllowed`가 난다 — 콘솔에 `/bovicare-gmapgoogle-dev/*`를 **추가로 등록**한다(README «사용 / 설정» 4번).
+- **할당량은 같은 키를 공유한다.** dev에서 지도를 여는 것도 라이브와 같은 일 상한(§4)을 갉아먹는다. 개발 중 지도를 반복해 새로고침하면 **라이브가 먼저 멈출 수 있다.**
+
+**자동저장은 두 경로가 공유한다.** `geomeasure.g.v1`은 localStorage 키이고 localStorage는 **오리진 단위**라, 같은 `yepark.co.kr`에 있는 dev와 라이브가 같은 데이터를 본다(§5.3의 K/G 키 분리와 같은 이유). 저장·복원 로직을 건드릴 때는 **라이브 사용자의 작업 내용을 덮어쓸 수 있다**고 보고 §2.3(데이터 유실)대로 다룬다.
+
 ---
 
 ## 4. 키 · 과금 취급

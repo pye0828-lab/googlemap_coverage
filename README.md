@@ -185,6 +185,8 @@ node selfcheck.test.js
 
 **https://yepark.co.kr/bovicare-gmapgoogle/** (라즈베리파이 자체 호스팅, nginx)
 
+기능을 고칠 때는 라이브를 직접 건드리지 않고 개발용 사본 **https://yepark.co.kr/bovicare-gmapgoogle-dev/** 에서 작업한 뒤 옮긴다. 절차와 주의점(리퍼러 등록·할당량 공유)은 [`CLAUDE.md`](CLAUDE.md) §3.4.
+
 국내판 K는 같은 호스트의 **https://yepark.co.kr/bovicare-gmapkakao/** 에 있다. 두 판이 같은 오리진에 올라가므로 자동저장 키가 반드시 달라야 한다(`geomeasure.g.v1` ↔ `bovicarekormap.v1`, [`CLAUDE.md`](CLAUDE.md) §5.3).
 
 **웹서버에서 `*.md`와 `.git/` 외부 접근을 차단할 것.** 이 저장소의 문서 파일과 형상관리 이력이 서비스 URL로 그대로 노출되는 것을 막는다. 설정 방법과 실제 적용값은 [`CLAUDE.md`](CLAUDE.md) §3.
