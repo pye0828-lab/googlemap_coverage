@@ -19,6 +19,9 @@
       "측위가 화면을 망치던 문제들 수정 및 위치 차단 헤더 대응" (2026-08-06)
     즉 원본 → K → G 로, 지도 엔진만 두 번 바뀌고 기능은 이어져 왔다.
   ----------------------------------------------------------------------------
+  · 지도 기본값은 원본과 같은 '위성+'(오버줌) — 공식 위성 이미지 한계를 넘어
+    확대해도 화면이 비지 않는다. 대신 비공식 타일 엔드포인트를 쓴다(initSatPlus
+    주석의 경고를 반드시 읽을 것). 공식 위성 모드는 이미지 한계까지만 열린다.
   · 지점 좌표 확인 / 경로 거리 측정 / 지점별 반경원 표시 / GPS 실시간 추적
   · 영역(방목지·농장경계) 다각형 + 지도 위 텍스트 주석
   · 저장은 GeoJSON — K 와 파일이 그대로 오간다(엔진이 달라도 데이터는 하나)
@@ -311,13 +314,17 @@
       <div class="card">
         <h2>⚙️ 지도</h2>
         <div class="row" id="mapTypeRow">
+          <button class="small" data-type="sat_plus" onclick="setMapType('sat_plus')">위성+</button>
           <button class="small" data-type="satellite" onclick="setMapType('satellite')">위성</button>
           <button class="small" data-type="hybrid" onclick="setMapType('hybrid')">위성+라벨</button>
           <button class="small" data-type="roadmap" onclick="setMapType('roadmap')">일반</button>
           <button class="small" data-type="terrain" onclick="setMapType('terrain')">지형</button>
         </div>
         <div class="muted" style="margin-top:6px;font-size:10px">
-          위성 = Google 위성영상(전세계). 국내는 영상이 오래된 지역이 많아
+          <b>위성+</b>(기본) = 원본 이미지 한계를 넘어도 확대해서 보여줍니다.
+          더 선명해지는 건 아니지만 화면이 비지 않습니다.
+          <b>위성</b>은 원본 이미지가 있는 배율까지만 열립니다.<br>
+          국내는 Google 영상이 오래된 지역이 많아
           <b>GeoMeasure K</b>(카카오 스카이뷰)를 쓰는 편이 낫습니다.
         </div>
       </div>
@@ -408,6 +415,10 @@ const DEFAULT_CENTER={lat:37.2176523, lng:127.0605514};
      K level 4(농장 전체) → G zoom 17
      K level 6(라벨 한계) → G zoom 15 */
 const ZOOM_CLOSEUP=18, ZOOM_START=17, LABEL_MIN_ZOOM=15;
+
+/* '위성+'(오버줌) 에서 허용할 최대 배율. 공식 위성은 지역별 이미지 한계까지만
+   열리고(보통 19~21), 그 위는 이 레이어가 하위 타일을 확대해 채운다. */
+const MAP_TYPE_PLUS='sat_plus', ZOOM_PLUS_MAX=22;
 
 const fmt = v => v.toFixed(7);
 
@@ -1263,9 +1274,19 @@ function loadGoogleMaps(){
     return;
   }
   const s=document.createElement('script');
-  // drawing = 영역(다각형) 그리기. geometry 는 쓰지 않는다(거리는 자체 haversine).
+  /* drawing = 영역(다각형) 그리기. geometry 는 쓰지 않는다(거리는 자체 haversine).
+
+     loading=async 를 일부러 빼고 원본과 같은 단일 요청 방식으로 받는다.
+     실측(2026-08-06, yepark.co.kr 리퍼러):
+       loading=async  → 13 KB 부트스트랩(0.18 s) 을 받고 나서 본체 312 KB 를 또 받음
+       async 없음     → 312 KB 를 한 번에(0.37 s)
+     구글은 async 를 권장하지만 그건 지도가 페이지의 일부일 때 이야기다. 이 도구는
+     지도가 전부라 어차피 콜백에서 즉시 Map 을 만든다 — 왕복만 한 번 늘고 화면이
+     그만큼 늦게 뜬다.
+     ponytail: 구버전 로더라 콘솔에 권장 경고가 뜬다. 구글이 이 경로를 실제로
+     끊으면 loading=async 를 되살리고 지도 생성을 importLibrary 로 옮기면 된다. */
   s.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(key)
-       +'&libraries=drawing&language=ko&region=KR&loading=async&callback=initMap';
+       +'&libraries=drawing&language=ko&region=KR&callback=initMap';
   s.async=true;
   s.onerror=()=>showMapError('지도 스크립트를 불러오지 못했습니다 (네트워크 또는 차단).');
   document.head.appendChild(s);
@@ -1278,12 +1299,12 @@ function initMap(){
     // 위치권한을 못 받았을 때의 자리. 측위에 성공하면 곧바로 현재 위치로 옮겨간다.
     center:LL(DEFAULT_CENTER),
     zoom:ZOOM_START,
-    mapTypeId:'satellite',        // 기본 = 위성
+    mapTypeId:'satellite',        // 아래에서 곧바로 '위성+' 로 바꾼다(등록 전이라 여기선 못 씀)
     disableDefaultUI:true, zoomControl:true,
     gestureHandling:'greedy',     // 한 손가락 드래그로 지도가 움직이게(현장에서 중요)
     tilt:0, clickableIcons:false  // POI 아이콘 클릭이 지점 추가를 가로채지 않게
   });
-  setMapType('satellite');
+  initSatPlus();                  // '위성+' 등록 + 이미지 한계 잠금. 기본 지도타입도 여기서 정한다
 
   // 영역 모드에서는 드로잉 매니저가 클릭을 가져가 이 핸들러가 아예 안 불린다.
   // 텍스트 놓기는 일회성이라 모드보다 먼저 본다.
@@ -1323,8 +1344,10 @@ function initMap(){
   document.getElementById('panel').addEventListener('transitionend',
     ()=>google.maps.event.trigger(map,'resize'));
 
-  // 키·리퍼러가 어긋나면 스크립트는 붙어도 타일이 안 온다(회색 화면).
-  // 일정 시간 안에 타일이 한 번도 안 그려지면 같은 안내를 띄운다.
+  /* 키·리퍼러가 어긋나면 스크립트는 붙어도 공식 타일이 안 온다(회색 화면).
+     주 감지 수단은 gm_authFailure 와 console.error 후킹이고, 이건 보조다.
+     ※ 기본값이 '위성+'로 바뀐 뒤로 이 검사의 힘은 약해졌다 — 그 레이어는 키를
+     타지 않아 인증이 깨져도 타일이 그려진다. 공식 지도타입일 때만 유효하다. */
   let tilesOk=false;
   map.addListener('tilesloaded', ()=>{ tilesOk=true; });
   setTimeout(()=>{ if(!tilesOk) showMapError('타일이 오지 않습니다 — 키 제한·할당량을 확인하세요.'); }, 5000);
@@ -1338,6 +1361,120 @@ function initMap(){
   const restored = pts.length || areas.length || texts.length;
   locateMe();                        // centerOnFix=true 로 세팅됨
   if(restored) centerOnFix=false;    // 복원본이 있으면 그 화면을 지킨다
+}
+
+/* ---------- '위성+' 오버줌 레이어 + 이미지 한계 잠금 ---------- */
+
+/* 이 지역 공식 위성영상의 최대 배율. MaxZoomService 결과로 갱신된다.
+   19 는 원본이 쓰던 초기값 — 첫 조회가 돌아오기 전까지만 쓰인다. */
+let nativeMax=19;
+
+/* 원본(dream2k2/gmap-plus-fsm-)의 핵심 장치를 그대로 옮긴 것이다.
+
+   공식 위성 타일은 지역마다 원본 이미지가 존재하는 배율이 정해져 있고(국내 농촌은
+   보통 19~21), 그 위로 확대하면 구글이 "죄송합니다. 이미지가 없습니다"를 띄우며
+   화면이 빈다. 축사 지붕과 게이트웨이 설치 지점을 눈으로 짚어야 하는 도구라
+   바로 그 배율에서 쓸모가 끊긴다.
+
+   해결: 원본 이미지가 있는 마지막 배율의 타일을 받아 CSS 로 잘라 확대해 채운다.
+   해상도가 실제로 늘지는 않지만 화면이 비지 않고, 축척·마커·반경원·거리는 지도
+   좌표계를 그대로 쓰므로 계속 정확하다.
+
+   ⚠️ 이 레이어가 받는 mt0~mt3.google.com/vt 는 문서화되지 않은 내부 타일
+   엔드포인트다. API 키를 타지 않아 무과금·고속인데, 뒤집으면 Google Maps
+   Platform 이 허용하는 경로가 아니라는 뜻이고 구글이 막으면 예고 없이 끊긴다.
+   원본과 화면·조작감을 맞추려고 그 위험을 알고 채택했다(작업자 결정 2026-08-06).
+   ponytail: 끊기면 이 레이어를 지우고 기본 지도타입을 'satellite' 로 되돌리면
+   된다. 아래 '이미지 한계 잠금'은 공식 API 만 쓰므로 그대로 살아있고, 도구는
+   확대 한계가 낮아질 뿐 정상 동작한다. */
+/* 오버줌 타일 한 장의 좌표 계산. 화면 배율(zoom)에 이미지가 없으면 이미지가 있는
+   배율(nativeMax)의 타일 중 이 자리를 덮는 한 장을 고르고, 그 안에서 어느 부분을
+   몇 배로 확대해 보여줄지를 픽셀로 돌려준다.
+   DOM 과 분리해 둔 이유는 하나 — 이 계산은 눈으로 맞는지 알 수 없어서 검증이
+   필요하다(selfcheck.test.js). null 은 지도 밖(극지방 너머)이라 빈 타일을 뜻한다. */
+function overzoomTile(coordX, coordY, zoom, maxNative){
+  let z=zoom, scale=1;
+  if(zoom>maxNative){ z=maxNative; scale=Math.pow(2, zoom-maxNative); }
+  const n=Math.pow(2,z);
+  const x=Math.floor(coordX/scale), y=Math.floor(coordY/scale);
+  if(y<0 || y>=n) return null;
+  return {
+    z, scale,
+    x:((x%n)+n)%n,                       // 날짜변경선을 넘어가도 x 가 감기게
+    y,
+    size:256*scale,                      // 확대된 타일 전체 크기(px)
+    // 그중 이 자리에 해당하는 부분만 창에 보이도록 민다(항상 0 이하).
+    // 빼는 순서를 뒤집어 둔 건 딱 떨어질 때 -0 이 나오지 않게 하기 위함이다.
+    left:(x*scale-coordX)*256,
+    top :(y*scale-coordY)*256
+  };
+}
+
+function initSatPlus(){
+  const satPlus={
+    tileSize:new google.maps.Size(256,256),
+    maxZoom:ZOOM_PLUS_MAX, minZoom:0, name:'위성+',
+    getTile:(coord, zoom, doc)=>{
+      const div=doc.createElement('div');
+      div.style.cssText='width:256px;height:256px;overflow:hidden;position:relative;background:#0a0d10';
+      const t=overzoomTile(coord.x, coord.y, zoom, nativeMax);
+      if(!t) return div;                        // 지도 밖 — 빈 타일로 둔다
+      const img=doc.createElement('img');
+      /* mt0~mt3 으로 분산해 호스트당 동시연결 한계를 피한다.
+         원본은 화면 타일 좌표(coord.x)로 호스트를 골랐는데, 오버줌 중에는 화면
+         16칸이 같은 원본 타일 한 장을 공유하므로 그러면 같은 이미지를 호스트만
+         바꿔 4번 받게 된다. 원본 타일 좌표로 고르면 그 16칸이 한 호스트를 써서
+         1번만 받고 나머지는 브라우저 캐시로 끝난다. 네이티브 배율에서는 두 값이
+         같으므로 분산 효과도 그대로다. */
+      const sub=(t.x%4)+1;
+      img.src='https://mt'+(sub>3?0:sub)+'.google.com/vt/lyrs=y&hl=ko'
+             +'&x='+t.x+'&y='+t.y+'&z='+t.z;
+      img.style.cssText='position:absolute;width:'+t.size+'px;height:'+t.size+'px;'
+        +'left:'+t.left+'px;top:'+t.top+'px';
+      img.onerror=()=>{ img.style.display='none'; };   // 없는 타일은 배경색 그대로
+      div.appendChild(img);
+      return div;
+    },
+    releaseTile:()=>{}
+  };
+  map.mapTypes.set(MAP_TYPE_PLUS, satPlus);
+  setMapType(MAP_TYPE_PLUS);        // 기본값 = 위성+ (원본과 동일)
+
+  /* 공식 위성/위성+라벨에서는 이미지가 있는 배율까지만 열어 둔다. "이미지가
+     없습니다"를 안 띄우는 정공법이고, 원본도 이 두 모드에서는 같은 방식이다. */
+  const mzs=new google.maps.MaxZoomService();
+  /* 이미지 해상도가 1 km 단위로 달라지지는 않는다. 소수점 2자리(약 1 km) 격자로
+     묶어 같은 자리를 다시 묻지 않는다 — 원본은 지도를 움직일 때마다 물었는데,
+     이 판은 할당량 상한을 걸고 쓰므로 호출 횟수를 아끼는 편이 맞다. */
+  const maxCache=new Map();
+  let mzTimer=null;
+
+  function useMax(z, t){
+    nativeMax=z;                                  // 위성+ 오버줌의 기준이기도 하다
+    if(t!=='satellite' && t!=='hybrid') return;
+    map.setOptions({maxZoom:z});
+    if(map.getZoom()>z){
+      map.setZoom(z);
+      toast('이 지역 위성 원본 한계: '+z+'레벨 — 더 확대하려면 [위성+]');
+    }
+  }
+  function applyMax(){
+    const t=map.getMapTypeId();
+    // 위성+ · 일반 · 지형은 한계가 없다(위성+는 오버줌으로 채우므로)
+    if(t!=='satellite' && t!=='hybrid') map.setOptions({maxZoom:ZOOM_PLUS_MAX});
+    const c=map.getCenter();
+    if(!c) return;
+    const key=c.lat().toFixed(2)+','+c.lng().toFixed(2);
+    if(maxCache.has(key)){ useMax(maxCache.get(key), t); return; }
+    mzs.getMaxZoomAtLatLng(c, r=>{
+      if(!r || r.status!=='OK') return;           // 실패하면 그냥 직전 값을 유지한다
+      maxCache.set(key, r.zoom);
+      useMax(r.zoom, map.getMapTypeId());         // 콜백 사이에 타입이 바뀌었을 수 있다
+    });
+  }
+  map.addListener('idle', ()=>{ clearTimeout(mzTimer); mzTimer=setTimeout(applyMax,300); });
+  map.addListener('maptypeid_changed', applyMax);
+  applyMax();
 }
 
 /* GeoJSON 을 지도에 끌어다 놓아 불러온다. 파일선택 창을 거치지 않는 쪽이

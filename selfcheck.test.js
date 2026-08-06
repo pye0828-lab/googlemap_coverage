@@ -337,5 +337,51 @@ t('ringOf: GeoJSON 은 [경도, 위도] 순서', ()=>{
   assert.strictEqual(r[0][1],33.4);
 });
 
+// ---- 8. '위성+' 오버줌 타일 좌표 ----
+// 눈으로는 맞는지 알 수 없는 계산이다. 어긋나면 지도가 엉뚱한 자리를 그리거나
+// 타일 경계가 어긋나 보이는데, 둘 다 "조금 이상한데" 로만 보여서 잡기 어렵다.
+t('오버줌: 이미지가 있는 배율에서는 손대지 않는다', ()=>{
+  const r=ctx.overzoomTile(446178, 210484, 19, 19);
+  assert.strictEqual(r.z,19); assert.strictEqual(r.scale,1);
+  assert.strictEqual(r.x,446178); assert.strictEqual(r.y,210484);
+  assert.strictEqual(r.left,0); assert.strictEqual(r.top,0);
+  assert.strictEqual(r.size,256);
+});
+t('오버줌: z21 요청 → z19 타일을 4배로 (용춘목장)', ()=>{
+  // 용춘목장 A(33.4011689,126.3664674) 의 z21 타일 = (1784714,841939)
+  const r=ctx.overzoomTile(1784714, 841939, 21, 19);
+  assert.strictEqual(r.z,19);
+  assert.strictEqual(r.scale,4);
+  // 그 자리를 덮는 z19 타일은 실제 z19 좌표 (446178,210484) 여야 한다
+  assert.strictEqual(r.x,446178);
+  assert.strictEqual(r.y,210484);
+  assert.strictEqual(r.size,1024);
+});
+t('오버줌: 잘라 보여줄 위치가 타일 안에 들어간다', ()=>{
+  // left/top 은 음수(밀어내는 값)이고, 256px 창이 확대된 타일 밖으로 나가면 안 된다
+  for(let dx=0; dx<4; dx++) for(let dy=0; dy<4; dy++){
+    const r=ctx.overzoomTile(1784712+dx, 841936+dy, 21, 19);
+    assert.ok(r.left<=0 && r.top<=0, 'left/top 은 0 이하여야 한다');
+    assert.ok(-r.left+256<=r.size && -r.top+256<=r.size, '창이 타일 밖으로 나갔다');
+  }
+});
+t('오버줌: 16칸이 모두 서로 다른 자리를 가리킨다', ()=>{
+  // z19 타일 한 장이 z21 타일 16장을 덮는다 — 겹치면 같은 그림이 반복된다
+  const seen=new Set();
+  for(let dx=0; dx<4; dx++) for(let dy=0; dy<4; dy++){
+    const r=ctx.overzoomTile(1784712+dx, 841936+dy, 21, 19);
+    seen.add(r.left+','+r.top);
+  }
+  assert.strictEqual(seen.size,16);
+});
+t('오버줌: 지도 밖(극지방 너머)은 null', ()=>{
+  assert.strictEqual(ctx.overzoomTile(0, -1, 19, 19), null);
+  assert.strictEqual(ctx.overzoomTile(0, Math.pow(2,19), 19, 19), null);
+});
+t('오버줌: 날짜변경선을 넘어도 x 가 감긴다', ()=>{
+  const n=Math.pow(2,19);
+  assert.strictEqual(ctx.overzoomTile(n+5, 210484, 19, 19).x, 5);
+});
+
 console.log('\n'+(fail?('실패 '+fail+'건 / '):'')+'통과 '+pass+'건');
 process.exit(fail?1:0);
