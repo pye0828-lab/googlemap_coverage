@@ -21,7 +21,8 @@ const src=m[1];
 const el=()=>({value:'', textContent:'', innerHTML:'', checked:true, style:{},
                classList:{toggle(){},add(){},remove(){}}, addEventListener(){}, dataset:{}});
 const ctx={
-  window:{}, location:{search:'', origin:'http://x'},
+  // pathname 은 gdShareURL() 이 공유 주소를 조립하는 데 쓴다(§드라이브)
+  window:{}, location:{search:'', origin:'http://x', pathname:'/'},
   document:{getElementById:el, querySelectorAll:()=>[], querySelector:()=>null,
             createElement:el, head:{appendChild(){}}, body:{appendChild(){}}, addEventListener(){}},
   localStorage:{getItem:()=>null, setItem(){}},
@@ -140,6 +141,42 @@ t('정상 파일: 지점1·영역1·텍스트1', ()=>{
 });
 t('반경은 보존(사용자 지정값)', ()=>assert.strictEqual(ctx.parseGeoJSON(good).out.radius,350));
 
+/* ---- 텍스트 사진: pid 가 곧 사진의 주인 열쇠다 ----
+   pid 를 흘리면 파일을 다시 열었을 때 사진이 미아가 되고, 그건 화면에
+   "사진이 없다"로만 보여서 조용히 유실된다. 왕복을 여기서 잡는다. */
+const T1PX='data:image/png;base64,iVBORw0KGgo=';
+t('텍스트 pid·사진 왕복', ()=>{
+  const {out}=ctx.parseGeoJSON({type:'FeatureCollection',features:[
+    {type:'Feature',geometry:{type:'Point',coordinates:[126.365,33.402]},
+     properties:{kind:'text',text:'배선 주의',fontSize:16,pid:'abc123',
+                 photos:[{uri:T1PX,name:'배선.jpg'}]}}]});
+  assert.strictEqual(out.texts[0].pid,'abc123');
+  assert.strictEqual(out.texts[0].photos.length,1);
+  assert.strictEqual(out.texts[0].photos[0].name,'배선.jpg');
+});
+t('pid 없는 구버전 텍스트는 null (불러올 때 새로 만든다)', ()=>{
+  const {out}=ctx.parseGeoJSON(good);
+  assert.strictEqual(out.texts[0].pid,null);
+  assert.strictEqual(out.texts[0].photos.length,0);
+});
+/* 하향호환은 사용자가 명시적으로 요구한 성질이다. pid·photos 가 없던 시절의
+   파일을 열었을 때 경고가 한 건이라도 뜨면, 멀쩡한 파일을 사용자가 손상된
+   것으로 오해한다 — 조용히 깨지는 자리라 여기에 못을 박는다.
+   K 가 내보낸 파일도 이 경로로 들어온다(§5.1 파일 호환). */
+t('구버전 파일(pid·photos 없음)은 경고 0건으로 읽힌다', ()=>{
+  const {log,out}=ctx.parseGeoJSON(good);
+  assert.strictEqual(log.length,0,'경고: '+JSON.stringify(log));
+  assert.strictEqual(out.pts[0].pid,null);
+  assert.strictEqual(out.pts[0].photos.length,0);
+});
+t('텍스트 사진도 지점과 같은 검증을 탄다(2MB 초과 거부)', ()=>{
+  const big='data:image/png;base64,'+'A'.repeat(2*1024*1024);
+  const {out}=ctx.parseGeoJSON({type:'FeatureCollection',features:[
+    {type:'Feature',geometry:{type:'Point',coordinates:[126.365,33.402]},
+     properties:{kind:'text',text:'x',pid:'p1',photos:[{uri:big}]}}]});
+  assert.strictEqual(out.texts[0].photos.length,0);
+});
+
 // ---- 4-1. GeoMeasure K 호환 (두 판이 파일을 주고받는다) ----
 /* K 가 내보낸 파일에는 properties.app 이 'GeoMeasure K' 로 찍힌다. 불러오기가
    이 값을 검사하면 국내판 파일이 여기서 거부된다 — 검사하지 않는 게 설계다. */
@@ -220,6 +257,147 @@ t('LineString 은 무시(파생값)', ()=>{
 t('Polygon 닫힘점 제거', ()=>{
   const {out}=ctx.parseGeoJSON(good);
   assert.strictEqual(out.areas[0].path.length,4);   // 링 5점 → 표시용 4점
+});
+
+// ---- 4-2. 지점 사진 (K @ dcc69a1·7ea3b12 에서 이식) ----
+// 사진은 파일 하나로 오가는 게 절대 조건이라 왕복(export→import)이 깨지면 안 되고,
+// 외부 파일의 문자열이 <img src> 로 DOM 에 꽂히는 경로라 검증도 함께 본다.
+// 값은 K 와 같아야 한다 — 두 판이 사진이 붙은 파일을 서로 열어야 하기 때문이다.
+const JPG='data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAg=';
+const PNG='data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==';
+// 최상위 let 인 pts 는 샌드박스 프로퍼티가 아니라 컨텍스트 안에서 채워 넣는다
+run('function __setPts(a){ pts.length=0; a.forEach(x=>pts.push(x)); }');
+const roundTrip = (photoMap) => {
+  ctx.__setPts([{lat:33.4011689,lng:126.3664674,name:'A동 GW',pid:'abc123',photos:[]}]);
+  const gj=ctx.buildGeoJSON(photoMap);
+  return {gj, back:ctx.parseGeoJSON(JSON.parse(JSON.stringify(gj)))};   // 파일을 거친 것과 같게
+};
+
+const badPhotos = arr => ctx.parseGeoJSON({type:'FeatureCollection',features:[
+  {type:'Feature',geometry:{type:'Point',coordinates:[126.36,33.4]},
+   properties:{kind:'gw',photos:arr}}]});
+// 현장 파일명 예시 — 목장·구역·지점·MAC·날짜가 이름 자체에 들어 있다
+const FNAME='색달목장_방목지_언덕2_D4F98D066F1D_260713.jpg';
+t('사진 왕복: 내보내기→불러오기에서 보존', ()=>{
+  const {back}=roundTrip({abc123:[{uri:JPG,name:FNAME},{uri:PNG}]});
+  const got=back.out.pts[0].photos;         // realm 이 달라 deepStrictEqual 대신 값을 직접 본다
+  assert.strictEqual(got.length,2);
+  assert.strictEqual(got[0].uri,JPG);
+  assert.strictEqual(got[1].uri,PNG);
+  assert.strictEqual(back.log.length,0, '경고 '+JSON.stringify(back.log));
+});
+t('원본 파일명 왕복 (리사이즈로 EXIF 가 사라지므로 유일한 촬영 맥락)', ()=>{
+  const {gj,back}=roundTrip({abc123:[{uri:JPG,name:FNAME}]});
+  assert.strictEqual(gj.features[0].properties.photos[0].name, FNAME, '내보내기에 이름이 없다');
+  assert.strictEqual(back.out.pts[0].photos[0].name, FNAME);
+});
+t('파일명 없는 사진은 키 자체가 안 나간다', ()=>{
+  const {gj,back}=roundTrip({abc123:[{uri:JPG}]});
+  assert.strictEqual('name' in gj.features[0].properties.photos[0], false);
+  assert.strictEqual(back.out.pts[0].photos[0].name,'');
+});
+t('파일명 넣기 전 형식(문자열 배열)도 그대로 열린다', ()=>{
+  const {out,log}=badPhotos([JPG,PNG]);     // 예전 내보내기 = data URI 문자열만
+  assert.strictEqual(out.pts[0].photos.length,2);
+  assert.strictEqual(out.pts[0].photos[0].uri,JPG);
+  assert.strictEqual(out.pts[0].photos[0].name,'');
+  assert.strictEqual(log.length,0, '경고 '+JSON.stringify(log));
+});
+t('파일명: 경로·제어문자 제거', ()=>{
+  const {out}=badPhotos([{uri:JPG,name:'../../etc/pa\u0000ss\u001fwd.jpg'}]);
+  assert.strictEqual(out.pts[0].photos[0].name,'passwd.jpg');
+});
+t('파일명: 120자 초과는 잘림', ()=>{
+  const {out}=badPhotos([{uri:JPG,name:'가'.repeat(500)+'.jpg'}]);
+  assert.strictEqual(out.pts[0].photos[0].name.length,120);
+});
+t('파일명이 문자열이 아니면 빈 값', ()=>{
+  const {out}=badPhotos([{uri:JPG,name:{evil:1}},{uri:PNG,name:12345}]);
+  assert.strictEqual(out.pts[0].photos[0].name,'');
+  assert.strictEqual(out.pts[0].photos[1].name,'');
+});
+t('파일명의 스크립트는 이스케이프된다(팝업 title 로 들어간다)', ()=>{
+  const {out}=badPhotos([{uri:JPG,name:'"><img src=x onerror=alert(1)>.jpg'}]);
+  const n=out.pts[0].photos[0].name;
+  const html=run('esc('+JSON.stringify(n)+')');
+  assert.ok(html.indexOf('<img')===-1 && html.indexOf('"')===-1, html);
+});
+t('uri 없는 객체는 파일명이 있어도 버린다', ()=>{
+  const {out,log}=badPhotos([{name:FNAME},{uri:'data:text/html;base64,AA==',name:FNAME}]);
+  assert.strictEqual(out.pts[0].photos.length,0);
+  assert.strictEqual(log.length,2);
+});
+t('지점 id(pid) 왕복: 사진을 잇는 열쇠라 살아야 한다', ()=>
+  assert.strictEqual(roundTrip({}).back.out.pts[0].pid,'abc123'));
+// 자동저장(localStorage)은 origin 당 약 5MB 고정이고 K 판과 나눠 쓴다.
+// 여기 사진이 섞이면 QuotaExceededError 로 좌표까지 통째로 유실된다.
+t('자동저장 GeoJSON 에는 사진이 안 들어간다', ()=>{
+  const {gj}=roundTrip(undefined);          // saveLocal() 이 부르는 방식
+  assert.strictEqual(gj.features[0].properties.photos, undefined);
+  assert.ok(JSON.stringify(gj).indexOf('base64')<0);
+});
+t('사진 없는 기존 파일도 그대로 열린다(역호환)', ()=>{
+  const {out,log}=ctx.parseGeoJSON(good);   // photos 키 자체가 없는 파일
+  assert.strictEqual(out.pts.length,1);
+  assert.strictEqual(out.pts[0].photos.length,0);
+  assert.strictEqual(log.length,0, '경고 '+JSON.stringify(log));
+});
+t('사진이 붙은 K 파일도 그대로 열린다', ()=>{
+  // K 가 내보낸 파일에는 pid·photos 가 같은 형식으로 들어 있다. 여기서 깨지면
+  // 두 판이 사진을 주고받지 못한다 — 파일 하나로 오가는 구조의 핵심이다.
+  const withPhoto=JSON.parse(JSON.stringify(fromK));
+  withPhoto.properties.app='GeoMeasure K';
+  withPhoto.features[0].properties.pid='kpid42';
+  withPhoto.features[0].properties.photos=[{uri:JPG,name:FNAME}];
+  const {out,log}=ctx.parseGeoJSON(withPhoto);
+  assert.strictEqual(out.pts[0].pid,'kpid42');
+  assert.strictEqual(out.pts[0].photos[0].uri,JPG);
+  assert.strictEqual(out.pts[0].photos[0].name,FNAME);
+  assert.strictEqual(log.length,0, '경고 '+JSON.stringify(log));
+});
+t('사진 모르는 구버전이 새 파일을 열어도 좌표는 산다', ()=>{
+  // photos·pid 를 모르는 파서는 properties 를 무시할 뿐이다 — geometry 는 그대로여야 한다
+  const {gj}=roundTrip({abc123:[JPG]});
+  const c=gj.features[0].geometry.coordinates;
+  assert.ok(c[0]===126.3664674 && c[1]===33.4011689, JSON.stringify(c));
+});
+t('data:text/html 은 거부 + 사유', ()=>{
+  const {out,log}=badPhotos(['data:text/html;base64,PHNjcmlwdD4=']);
+  assert.strictEqual(out.pts[0].photos.length,0);
+  assert.ok(log.length>0, '버렸으면 사유를 남겨야 한다');
+});
+t('접두어 없는 문자열·javascript: 거부', ()=>{
+  const {out}=badPhotos(['iVBORw0KGgo=', 'javascript:alert(1)', '<img src=x onerror=alert(1)>']);
+  assert.strictEqual(out.pts[0].photos.length,0);
+});
+t('data URI 가 아닌 타입(객체·숫자) 거부', ()=>
+  assert.strictEqual(badPhotos([{},7,null]).out.pts[0].photos.length,0));
+t('photos 가 배열이 아니면 무시 + 사유', ()=>{
+  const {out,log}=badPhotos(JPG);           // 단수 string 으로 온 경우
+  assert.strictEqual(out.pts[0].photos.length,0);
+  assert.ok(log.some(m=>m.includes('배열')));
+});
+t('한 장 2MB 초과 거부(DoS·용량 방어)', ()=>{
+  const big='data:image/jpeg;base64,'+'A'.repeat(3*1024*1024);
+  assert.strictEqual(badPhotos([big]).out.pts[0].photos.length,0);
+});
+t('장수 상한 20장', ()=>{
+  const {out,log}=badPhotos(new Array(30).fill(JPG));
+  assert.strictEqual(out.pts[0].photos.length,20);
+  assert.ok(log.some(m=>m.includes('20장만')));
+});
+t('base64 문자셋 밖의 글자 거부', ()=>
+  assert.strictEqual(badPhotos(['data:image/jpeg;base64,AAAA<>AAAA']).out.pts[0].photos.length,0));
+t('okPhotoURI: 정상 3종 통과', ()=>{
+  assert.ok(run('okPhotoURI('+JSON.stringify(JPG)+')'));
+  assert.ok(run('okPhotoURI('+JSON.stringify(PNG)+')'));
+  assert.ok(run('okPhotoURI("data:image/webp;base64,UklGRg==")'));
+});
+// 사진 DB 는 localStorage 키와 같은 이유로 K 와 달라야 한다 — IndexedDB 도 origin
+// 단위라, 이름이 같으면 K 에서 지점을 지울 때 이쪽 사진까지 pid 로 같이 지워진다.
+t('사진 IndexedDB 이름이 K 와 다르다(같은 호스트에서 DB 를 공유한다)', ()=>{
+  assert.strictEqual(run('PDB_NAME'),'geomeasure-g-photos');
+  assert.notStrictEqual(run('PDB_NAME'),'geomeasure-photos');
 });
 
 // ---- 5. GeoJSON 파싱: 손상·악의적 입력 (조용히 깨지면 안 된다) ----
@@ -442,6 +620,54 @@ t('영역: 범위 밖 좌표는 normPath 가 걸러 영역이 되지 않는다',
   draft('addAreaVertex({lat:999,lng:999}); addAreaVertex({lat:33.40,lng:126.37});'
        +'addAreaVertex({lat:33.41,lng:126.37}); closeAreaDraft();');
   assert.strictEqual(run('captured'), null);
+});
+
+// ---- 9. 드라이브 링크에서 파일 ID 뽑기 ----
+// 붙여넣는 형태가 제각각이라 여기가 조용히 틀리면 "링크 형식을 확인하세요"만 뜬다.
+// ID 를 못 뽑으면 요청 자체가 안 나가므로, 형태별로 한 줄씩 남긴다.
+const ID='1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUv';
+t('driveFileId: 공유 버튼 링크(/file/d/…/view)', ()=>
+  assert.strictEqual(ctx.driveFileId('https://drive.google.com/file/d/'+ID+'/view?usp=sharing'),ID));
+t('driveFileId: /open?id= 형태', ()=>
+  assert.strictEqual(ctx.driveFileId('https://drive.google.com/open?id='+ID),ID));
+t('driveFileId: uc?export=download&id= 형태', ()=>
+  assert.strictEqual(ctx.driveFileId('https://drive.google.com/uc?export=download&id='+ID),ID));
+t('driveFileId: ID 만 붙여넣어도 받는다', ()=>
+  assert.strictEqual(ctx.driveFileId('  '+ID+'  '),ID));
+// 임의 URL 을 그대로 fetch 하지 않는다는 보장이 이 두 줄이다(요청처는 googleapis.com 고정).
+t('driveFileId: 관계없는 URL 은 null', ()=>
+  assert.strictEqual(ctx.driveFileId('https://example.com/evil.geojson'),null));
+t('driveFileId: 빈 값·undefined 는 null', ()=>{
+  assert.strictEqual(ctx.driveFileId(''),null);
+  assert.strictEqual(ctx.driveFileId(undefined),null);
+});
+
+// ---- 10. 공유 주소 조합 ----
+// 여기가 조용히 틀리면 링크를 받은 쪽에서만 실패한다 — 만든 사람은 끝까지 모른다.
+const withInput = (val,fn)=>{
+  const box={value:val}, orig=ctx.document.getElementById;
+  ctx.document.getElementById=()=>box;
+  try{ return fn(); } finally { ctx.document.getElementById=orig; }
+};
+ctx.location.origin='https://yepark.co.kr';
+ctx.location.pathname='/bovicare-gmapgoogle/';
+t('gdShareURL: 현재 주소 + ?gd=<파일 ID>', ()=>
+  assert.strictEqual(
+    withInput('https://drive.google.com/file/d/'+ID+'/view?usp=sharing', ctx.gdShareURL),
+    'https://yepark.co.kr/bovicare-gmapgoogle/?gd='+ID));
+// 링크 통째가 아니라 ID 를 넣는 게 의도다(URL 안에 URL 이 들어가면 두 배로 길어진다).
+t('gdShareURL: 링크가 아니라 ID 가 들어간다', ()=>
+  assert.ok(!withInput('https://drive.google.com/file/d/'+ID+'/view', ctx.gdShareURL).includes('drive.google.com')));
+t('gdShareURL: 유효한 링크가 아니면 빈 문자열(버튼을 숨기는 조건)', ()=>{
+  assert.strictEqual(withInput('', ctx.gdShareURL),'');
+  assert.strictEqual(withInput('https://example.com/x', ctx.gdShareURL),'');
+});
+/* dev 사본에서 만든 링크는 dev 주소가 나와야 한다. 경로를 박아 두면 dev 에서 만든
+   링크가 라이브를 가리켜, 아직 검증 안 된 파일이 서비스 화면에 열린다(§3.4). */
+t('gdShareURL: -dev 에서 만들면 dev 주소가 나온다', ()=>{
+  ctx.location.pathname='/bovicare-gmapgoogle-dev/';
+  assert.strictEqual(withInput(ID, ctx.gdShareURL),
+    'https://yepark.co.kr/bovicare-gmapgoogle-dev/?gd='+ID);
 });
 
 console.log('\n'+(fail?('실패 '+fail+'건 / '):'')+'통과 '+pass+'건');
