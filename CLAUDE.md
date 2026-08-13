@@ -28,16 +28,17 @@
   - 본문에는 **비자명한 '왜'만** 적는다. 코드에 보이는 것, 주석에 이미 있는 것, 검토하며 재본 것은 옮겨 적지 않는다.
   - 근거를 길게 남겨야 하면 **소스 주석이나 README 로 간다.** 커밋 메시지는 문서가 아니다.
 
-### 1.2 브랜치 — 원격은 `main` 하나다 (에이전트 필독)
+### 1.2 브랜치 — 만들지 않는다 (에이전트 필독)
 
-**브랜치를 새로 만들지 않는다.** 작업은 이미 있는 `dev` 워크트리에서 한다(§3.4). 기능마다 브랜치를 파면 릴리즈처가 하나뿐인 이 레포에서는 추적 비용만 늘고 얻는 게 없다.
+**브랜치를 새로 만들지 않는다. 로컬에도 만들지 않는다.** 이 레포에 있는 브랜치는 `main` 하나이고, 원격에 가는 것도 `main` 하나다.
 
-**작업 브랜치를 origin 에 푸시하지 않는다.** 서버에 올라가는 건 `main` 뿐이다.
+- 이유: **이력을 한 줄로 읽으려는 것**이다. 사람이 `pull --rebase` 후 `push` 로 일직선을 유지하고 있어서, 브랜치가 생기면 그 목적이 깨진다. 1인 개발에 릴리즈처가 하나(`main` 워크트리 = 웹루트)라 브랜치로 얻는 것도 없다 — 어느 게 서비스 중인지 추적 비용만 생긴다.
+- 개발 사본(`-dev`)이 필요한 이유는 **롤백이 아니라 라이브를 직접 안 고치려는 것**뿐이다(§3.4). 그래서 이름 붙은 브랜치가 필요 없다 — **detached HEAD 로 둔다.** 워크트리가 브랜치를 요구하는 것처럼 보이는 건 같은 브랜치를 두 워크트리가 동시에 체크아웃 못 하기 때문인데, detach 하면 그 제약 자체가 없어진다.
+- 릴리즈 절차는 §3.4 하나뿐이고, **브랜치명이 아니라 커밋 SHA 로** ff-merge 한다.
+- 끝나면 **`git branch` 와 `git ls-remote --heads origin` 이 각각 `main` 한 줄**이어야 한다. 그 외가 보이면 지운다(`git branch -d`).
+- upstream 을 브랜치에 걸지 않는다(**`-u` 금지**). 걸리면 `git push` 만 쳐도 원격에 브랜치가 생긴다 — K 에서 실제로 그렇게 올라갔다(kakaomap @ 049b9da).
 
-- 이유: 1인 개발이고 릴리즈처가 하나(`main` 워크트리 = 웹루트)다. 원격에 브랜치가 늘면 어느 게 서비스 중인지 추적 비용만 생긴다.
-- 릴리즈 절차는 §3.4 하나뿐이고, 원격에 가는 건 `main` 뿐이다.
-- 푸시 후 `git ls-remote --heads origin` 이 `refs/heads/main` **한 줄**이어야 한다. 그 외가 보이면 지운다.
-- `dev` 에 upstream 을 걸지 않는다(**`-u` 금지**). 한 번 걸리면 `git push` 만 쳐도 원격에 브랜치가 생긴다 — K 에서 실제로 그렇게 올라갔다(kakaomap @ 049b9da).
+> 2026-08-11 에 `dev` 브랜치를 없애고 detached HEAD 로 바꿨다(kakaomap @ 1e7f540). 그 전 절차를 기억하는 세션이 `-b dev` 로 되돌리지 않도록 여기 남긴다.
 
 ---
 
@@ -235,13 +236,16 @@ curl -sI https://yepark.co.kr/                     | grep -i permissions-policy 
 
 `/bovicare-gmapgoogle/`은 **돌아가는 서비스**다. 기능을 손볼 때 라이브를 직접 고치지 않는다 — 이 도구는 실지도·실기 GPS로만 검증되므로(§2.4, README «검증 상태») **확인하는 동안 깨진 화면이 그대로 서비스된다.** git worktree 사본에서 작업하고, 확인이 끝난 것만 옮긴다. K도 같은 구조다(`/bovicare-gmapkakao-dev/`).
 
-| | 경로 | URL | 브랜치 |
+| | 경로 | URL | HEAD |
 |---|---|---|---|
 | 릴리즈 | `/var/www/html/webpage-googlemap-coverage/` | `/bovicare-gmapgoogle/` | `main` |
-| 개발 | `/var/www/html/webpage-googlemap-coverage-dev/` | `/bovicare-gmapgoogle-dev/` | `dev` |
+| 개발 | `/var/www/html/webpage-googlemap-coverage-dev/` | `/bovicare-gmapgoogle-dev/` | **detached** |
+
+**`-b` 로 브랜치를 만들지 않는다** — §1.2 대로 detached HEAD 로 뜬다. 사본은 라이브를 직접 안 고치려고 두는 것이지 이력을 가르려는 게 아니다.
 
 ```bash
-git worktree add /var/www/html/webpage-googlemap-coverage-dev -b dev   # 최초 1회 (완료됨)
+git worktree add --detach /var/www/html/webpage-googlemap-coverage-dev main   # 최초 1회 (완료됨)
+git -C /var/www/html/webpage-googlemap-coverage-dev switch --detach main      # 작업 시작 전 최신에 맞춘다
 ```
 
 nginx는 **세 곳이 짝**이다 — `location /bovicare-gmapgoogle-dev/`(alias), 내부 폴더명 차단 regex의 `webpage-googlemap-coverage-dev`, 그리고 `security.conf`의 위치 권한 map. 사본을 없앨 때는 `git worktree remove`로 지운다(디렉터리만 지우면 등록이 남는다).
@@ -252,14 +256,16 @@ nginx는 **세 곳이 짝**이다 — `location /bovicare-gmapgoogle-dev/`(alias
 cd /var/www/html/webpage-googlemap-coverage-dev
 node selfcheck.test.js                    # 용춘목장 기준값이 1차 관문 (§2.4)
 # ↑ 통과는 최소 조건이다. 사람이 dev 화면에서 확인한 뒤에 커밋한다 (§1.1)
-git add -A && git commit -m "..."         # dev 는 원격에 올리지 않는다 (§1.2)
+git add -A && git commit -m "..."         # detached HEAD 라 브랜치가 안 생긴다 (§1.2)
+git rev-parse HEAD                        # 이 SHA 를 라이브에서 병합한다
 
 cd /var/www/html/webpage-googlemap-coverage
-git merge --ff-only dev                   # 파일이 바뀌는 순간 = 릴리즈 (빌드 없음)
+git merge --ff-only <SHA>                 # 브랜치명이 아니라 커밋 SHA 로 (빌드 없음 = 이 순간이 릴리즈)
+git pull --rebase origin main             # 원격이 앞서 있으면 일직선으로 얹는다
 git push origin main                      # 원격에 가는 건 main 뿐
 ```
 
-`--ff-only`인 이유: **라이브에서 직접 커밋하지 않는다는 규율을 강제한다.** 여기서 실패하면 누군가 라이브를 직접 고친 것이므로, 그 커밋을 dev로 가져가 정리한 뒤 다시 올린다. 옮긴 뒤 §3.3을 다시 돌린다(파일이 그대로 서빙되므로 reload는 필요 없다).
+`--ff-only`인 이유: **라이브에서 직접 커밋하지 않는다는 규율을 강제한다.** 여기서 실패하면 누군가 라이브를 직접 고친 것이므로, 개발 사본을 그 커밋 위로 `switch --detach` 해서 정리한 뒤 다시 올린다. 옮긴 뒤 §3.3을 다시 돌린다(파일이 그대로 서빙되므로 reload는 필요 없다).
 
 **G 고유 주의점 두 가지 — K에는 없다.**
 
@@ -317,6 +323,8 @@ K(`pye0828-lab/kakaomap_coverage`)와 **별도 저장소**다. 자동 동기화 
 | 지형 | ROADMAP + `addOverlayMapTypeId(TERRAIN)` | `'terrain'` — **오버레이가 아닌 기본 타입** |
 | 마커 라벨 | 미지원 → 색 원+글자 **SVG 데이터 URI** | `label` 네이티브 + `SymbolPath.CIRCLE` |
 | 마커 모양 변경 | `setImage()` | `setIcon()` + `setLabel()` |
+| 지점 이름 라벨 | 항상 SVG(글자를 그려야 해서) | **이름·배지가 있을 때만** SVG. 네이티브 `label` 은 A·B·C 에 이미 쓰여 하나뿐이라, 이름만 SVG 로 내려가고 `labelOrigin` 이 글자를 원 안에 잡아둔다 |
+| 마커 일괄 갱신 | `syncMarkerImages()` — 이미지 하나만 갈면 됨 | 같은 이름이되 **`setLabel()` 을 같이 부른다** — A·B·C 도 인덱스에서 파생돼 순서가 바뀌면 따로 밀린다 |
 | 원 중심 이동 | `circle.setPosition()` | `circle.setCenter()` — **이름이 반대라 헷갈림** |
 | 폴리곤 경로 | `path` | `paths` (링의 배열) |
 | 점선 | `strokeStyle:'shortdash'` | `strokeOpacity:0` + `icons[]` 반복 기호 |
@@ -335,6 +343,7 @@ K(`pye0828-lab/kakaomap_coverage`)와 **별도 저장소**다. 자동 동기화 
 | 지도 오류 판정 신호 | `idle` + `tilesDrawn()` | 같음 — **`tilesloaded` 를 믿지 않는다.** 이벤트는 놓치면 끝이지만 그려진 `<img>` 는 상태로 남는다(kakaomap @ 5475b7e) |
 | 드라이브 API 키 | `GDRIVE_KEY` 를 따로 둠 (지도가 카카오라 구글 키가 없다) | **`apiKey()` 를 Maps 와 공유** — 지도 키가 이미 구글 키다. `?key=` 임시 확인도 양쪽에 같이 걸린다 |
 | 확대 한계 | 스카이뷰가 알아서 처리 | **G 전용** — `위성+`(오버줌) + `MaxZoomService` 잠금. §5.5 |
+| 위치 고정(잠금) | **아직 없음 — 역이식 대상(§5.7)** | `m.setDraggable(!locked)`. 엔진에 묶인 건 이 한 줄뿐이고 나머지는 K 와 같게 옮긴다 |
 
 ### 5.4 갈라서기
 
@@ -363,3 +372,20 @@ K(`pye0828-lab/kakaomap_coverage`)와 **별도 저장소**다. 자동 동기화 
 - **`loadLocal()` 이 안 돌았는데 `saveLocal()` 은 돌아서 저장된 작업이 빈 상태로 덮어써졌다.** 그래서 `localLoaded` 잠금을 뒀다(§2.3 데이터 유실). `saveLocal` 은 호출부가 16곳이라 **쓰는 쪽 한 곳에서** 막는다.
 
 **진단 기록** — 이 판정은 브라우저 없이 났다. `curl` 로 `maps/api/js` 번들을 받아 `DrawingManager` 문자열을 찾으면 throw 문이 그대로 보인다. 반대로 `AuthenticationService`·`GeocodeService` 를 직접 부르는 건 §3.3 경고대로 소용없다. `v=3.64` / `v=quarterly` 는 아직 예전 번들을 준다 — **버전 고정은 시간을 살 뿐이라 채택하지 않았다.**
+
+### 5.7 G 에서 먼저 난 변경 — **K 로 역이식 대상** (2026-08-13, 미이식)
+
+§5.2 는 K → G 한 방향만 다루지만, **위치 고정(잠금)은 G 에서 먼저 만들었다.** 두 파일을 나란히 놓고 diff 하는 사람이 이걸 "G 만의 일탈"로 보고 지우지 않도록 여기 남긴다 — §5.5·§5.6 과 달리 **이건 G 전용이 아니다.**
+
+**원인이 엔진과 무관하다.** 모바일에서 핀치 확대의 첫 손가락이 라벨·마커 위에 떨어지면 드래그로 잡혀 좌표가 바뀐다. 카카오에서도 똑같이 나고, K 의 `makeDraggableLabel` 도 같은 구조라 같은 자리가 뚫려 있다.
+
+**옮길 것 두 가지 (순서대로)**
+
+1. `makeDraggableLabel` 의 **멀티터치 가드** — `down` 에서 `e.touches.length>1` 이면 시작하지 않고, `move` 도중 손가락이 둘이 되면 원래 자리로 되돌린 뒤 `onMoved` 를 부르지 않는다(취소인데 저장까지 하면 원래 자리를 잃는다). **잠금과 무관한 근본 원인 수정이라 이쪽이 먼저다.**
+2. **잠금 스위치** — 상태(`locked`), 자동 규칙(`applyParsed` 에서 잠금 · `clearAll` 에서 해제), 체크박스를 그대로 옮긴다.
+
+- **엔진에 묶인 곳은 한 줄뿐이다**: `applyLock()` 의 `m.setDraggable(!locked)`. 카카오 마커도 메서드 이름이 같아 그대로 간다.
+- 자동 규칙을 `applyParsed` 한 곳에 건 이유: 불러오기(파일·드라이브)와 새로고침 복원이 **둘 다 이 함수를 지난다.** 호출부마다 걸면 경로가 하나 늘 때 빠뜨린다.
+- **잠금 상태는 저장하지 않는다** — 자동저장 GeoJSON 에 필드를 늘리면 K 와 파일이 갈린다(§5.1). 새로고침 뒤에는 자동 규칙이 다시 정한다.
+
+역이식이 끝나면 이 절을 지우고 §5.3 대응표의 해당 줄만 남긴다.

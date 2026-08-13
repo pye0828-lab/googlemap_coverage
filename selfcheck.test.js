@@ -670,5 +670,70 @@ t('gdShareURL: -dev 에서 만들면 dev 주소가 나온다', ()=>{
     'https://yepark.co.kr/bovicare-gmapgoogle-dev/?gd='+ID);
 });
 
+// ---- 11. 마커 이름 라벨: 그림이 커져도 좌표는 안 움직여야 한다 ----
+// 이름 폭이 어림값이라 크기 계산이 조용히 틀어질 수 있다. 틀어지면 마커가
+// 좌표에서 밀리는데(= 측정 결과가 거짓말이 된다) 화면으로는 알아채기 어렵다.
+ctx.google={maps:{
+  Size:class{ constructor(w,h){ this.w=w; this.h=h; } },
+  Point:class{ constructor(x,y){ this.x=x; this.y=y; } },
+  SymbolPath:{CIRCLE:'circle'}}};
+const icon = (name,hasPhoto)=>ctx.markerIcon('#ff0000',!!hasPhoto,name);
+/* G 는 이름도 배지도 없으면 SVG 로 안 내려간다(SymbolPath 한 줄). K 는 글자를
+   그려야 해서 항상 SVG 였다 — 대응표의 그 차이가 여기서 눈에 보인다. */
+t('이름·배지가 없으면 SVG 로 안 내려간다(기본 경로 유지)', ()=>{
+  const a=icon('');
+  assert.strictEqual(a.path,'circle');
+  assert.strictEqual(a.url, undefined);
+});
+t('배지만 있으면 그림 크기가 예전 그대로', ()=>{
+  const b=icon('',true);
+  assert.deepStrictEqual([b.scaledSize.w,b.scaledSize.h,b.anchor.x,b.anchor.y],[36,36,14,22]);
+});
+t('이름이 길어도 anchor 는 계속 원의 중심', ()=>{
+  ['가','본관 게이트웨이','WWWWWWWWWW'].forEach(n=>{
+    [false,true].forEach(hp=>{
+      const im=icon(n,hp), r=12+1;                    // 원 반지름 + 흰 테두리
+      assert.ok(im.anchor.y===(hp?22:14), n+' y');
+      assert.ok(im.anchor.x>=r && im.anchor.x+r<=im.scaledSize.w, n+' x='+im.anchor.x+' w='+im.scaledSize.w);
+    });
+  });
+});
+// labelOrigin 이 anchor 와 어긋나면 A·B·C 가 원 밖에 찍힌다(G 만의 실패 모드 —
+// K 는 글자가 SVG 안에 있어 어긋날 자리가 없다).
+t('labelOrigin 은 anchor 와 같은 자리(글자가 원 안에 남는다)', ()=>{
+  ['','가나다라마바사아자차'].forEach(n=>[false,true].forEach(hp=>{
+    const im=icon(n,hp);
+    if(!im.url) return;                              // SymbolPath 경로엔 labelOrigin 이 없다
+    assert.deepStrictEqual([im.labelOrigin.x,im.labelOrigin.y],[im.anchor.x,im.anchor.y], n);
+  }));
+});
+t('이름이 그림 밖으로 안 나간다', ()=>{
+  ['가나다라마바사아자차','Gateway-01'].forEach(n=>{
+    const im=icon(n), half=run('nameWidth('+JSON.stringify(n)+')')/2;
+    assert.ok(im.anchor.x-half>=0 && im.anchor.x+half<=im.scaledSize.w, n+' 폭 초과');
+    assert.ok(im.scaledSize.h>28, n+' 높이가 안 늘었다');
+  });
+});
+// 이름은 사용자·파일에서 온다 — SVG 안에 그대로 들어가면 그림이 통째로 깨진다.
+t('이름 이스케이프', ()=>{
+  const svg=decodeURIComponent(icon('<b>&"x').url.split(',')[1]);
+  assert.ok(!svg.includes('<b>') && svg.includes('&lt;b&gt;'), svg.slice(-160));
+});
+
+// ---- 12. 지점 순서 바꾸기 ----
+// 순서는 표시가 아니라 계산이다(구간 거리·폐합 둘레가 배열 순서로 나온다).
+// 원소를 통째로 옮기지 않으면 이름·사진(pid)이 엉뚱한 지점에 가서 붙는다.
+const moved = (arr,i,j)=>{ const a=arr.slice(); run('moveItem')(a,i,j); return a; };
+t('moveItem: 한 칸 위로 (F→E 자리)', ()=>
+  assert.deepStrictEqual(moved(['A','B','C'],2,1), ['A','C','B']));
+t('moveItem: 한 칸 아래로', ()=>
+  assert.deepStrictEqual(moved(['A','B','C'],0,1), ['B','A','C']));
+t('moveItem: 두 칸 이상도 자리 그대로', ()=>
+  assert.deepStrictEqual(moved(['A','B','C','D'],3,1), ['A','D','B','C']));
+t('moveItem: 이름·사진이 지점을 따라간다', ()=>{
+  const a=moved([{name:'가',pid:'p1'},{name:'나',pid:'p2'},{name:'다',pid:'p3'}],2,0);
+  assert.deepStrictEqual(a.map(p=>p.name+':'+p.pid), ['다:p3','가:p1','나:p2']);
+});
+
 console.log('\n'+(fail?('실패 '+fail+'건 / '):'')+'통과 '+pass+'건');
 process.exit(fail?1:0);
